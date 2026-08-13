@@ -1,0 +1,89 @@
+{
+  "generatedAt": "2026-08-13T00:00:00.000Z",
+  "version": "3.1.1-PROT",
+  "buildStatus": "OK",
+  "typecheck": "0 errores",
+  "audit": "0 vulnerabilidades",
+  "files": {
+    "total": 22,
+    "list": [
+      "src/App.tsx",
+      "src/components/AegisMetricsPanel.tsx",
+      "src/components/BottomNav.tsx",
+      "src/components/CameraStream.tsx",
+      "src/components/DemoModeBanner.tsx",
+      "src/components/EmergencyCallButtons.tsx",
+      "src/components/Landing.tsx",
+      "src/components/OnboardingGuide.tsx",
+      "src/components/TopBar.tsx",
+      "src/context/AppContext.tsx",
+      "src/context/ToastContext.tsx",
+      "src/core/EVOLIS.ts",
+      "src/core/PerceptionEngine.ts",
+      "src/hooks/useDemoEventGenerator.ts",
+      "src/hooks/useMetricsUpdater.ts",
+      "src/hooks/usePanic.ts",
+      "src/hooks/useRealModeSensors.ts",
+      "src/index.css",
+      "src/lib/crypto.ts",
+      "src/lib/pipedream.ts",
+      "src/main.tsx",
+      "src/pages/Dashboard.tsx",
+      "src/pages/Operations.tsx",
+      "src/pages/Regulation.tsx",
+      "src/pages/Settings.tsx",
+      "src/types.ts",
+      "src/vite-env.d.ts"
+    ]
+  },
+  "keyComponents": [
+    "AegisMetricsPanel",
+    "BottomNav",
+    "CameraStream",
+    "DemoModeBanner",
+    "EmergencyCallButtons",
+    "Landing",
+    "OnboardingGuide",
+    "TopBar",
+    "Dashboard",
+    "Operations",
+    "Regulation",
+    "Settings"
+  ],
+  "modules": {
+    "core": [
+      "AppContext",
+      "useDemoEventGenerator",
+      "useMetricsUpdater",
+      "useRealModeSensors",
+      "usePanic",
+      "EVOLIS",
+      "PerceptionEngine",
+      "crypto (Dilithium + hash chain)",
+      "pipedream"
+    ]
+  },
+  "features": [
+    "Modo Normal / Tecnico",
+    "Modo Real (camara, microfono, GPS con filtro > 20m)",
+    "Landing page con hero, pilares y CTA",
+    "Onboarding guiado",
+    "Botones de emergencia (PANICO, 911, 107, 103)",
+    "Banner DEMO transparente",
+    "Panel de Metricas (Aegis button)",
+    "Eventos demo → Telegram (Pipedream)",
+    "Exportacion JSON de evidencia con confirmacion visual",
+    "Capa perceptiva EVOLIS (patrones ambiguos, ruido estructurado)",
+    "Resaltado visual: botones criticos, camaras, badges",
+    "Carga procedural (lazy loading)",
+    "Modo Ahorro de Energia (animaciones off, modulos limitados)",
+    "Optimizacion: GPS 10s, eventos 15s, metricas 5s",
+    "Pausa de workers IA/vision fuera de Operaciones",
+    "Calidad adaptativa: camara 480p, audio 16kHz en modo normal",
+    "PWA instalable (manifest + service worker)"
+  ],
+  "dependencies": {
+    "removed": ["react-router-dom (vulnerabilidades CVE-2025-68470, GHSA-337j-9hxr-rhxg)"],
+    "current": ["react", "react-dom", "lucide-react", "@tensorflow/tfjs", "@tensorflow-models/coco-ssd"]
+  }
+}
