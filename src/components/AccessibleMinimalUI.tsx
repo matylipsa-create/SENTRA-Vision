@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { useRealModeSensors } from '../hooks/useRealModeSensors';
+import vm from '../voice/manager';
 
 /**
  * AccessibleMinimalUI
@@ -28,18 +29,23 @@ export default function AccessibleMinimalUI(): JSX.Element {
   // toggle function
   const toggle = () => {
     updateSettings({ realMode: !realMode });
-    // immediate audio feedback using SpeechSynthesis (short confirmation)
+
+    // announce using shared VoiceManager so utterances are logged and queued
     try {
-      if ('speechSynthesis' in window) {
-        const utter = new SpeechSynthesisUtterance(realMode ? 'Desactivando' : 'Activando');
-        utter.lang = 'es-ES';
-        utter.rate = 1;
-        window.speechSynthesis.cancel(); // avoid overlap
-        window.speechSynthesis.speak(utter);
-      }
+      const text = realMode ? 'Desactivando la descripción' : 'Activando la descripción';
+      vm.speak(text, 1, { interrupt: true });
     } catch {
-      // no-op fallback
+      // fallback to speechSynthesis if VoiceManager fails
+      try {
+        if ('speechSynthesis' in window) {
+          const utter = new SpeechSynthesisUtterance(realMode ? 'Desactivando' : 'Activando');
+          utter.lang = 'es-ES';
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utter);
+        }
+      } catch {}
     }
+
     // focus back to button for screen reader users
     setTimeout(() => btnRef.current?.focus(), 200);
   };
