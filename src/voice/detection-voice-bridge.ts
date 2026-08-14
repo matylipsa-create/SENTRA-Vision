@@ -1,5 +1,6 @@
 // src/voice/detection-voice-bridge.ts
 import VoiceManager from './voice';
+import vmSingleton from './manager';
 
 interface Prediction { class: string; score: number; bbox?: number[] }
 
@@ -11,13 +12,14 @@ export default class DetectionVoiceBridge {
   speakPriority: number;
   tracked: Map<string, any>;
 
-  constructor(voiceManager: VoiceManager, {
+  // option: pass vm (for testability) or use default singleton
+  constructor(voiceManager?: VoiceManager, {
     scoreThreshold = 0.5,
     minFramesToConfirm = 2,
     forgetMs = 2000,
     speakPriority = 0
   } = {}) {
-    this.vm = voiceManager;
+    this.vm = (voiceManager || (vmSingleton as unknown as VoiceManager));
     this.scoreThreshold = scoreThreshold;
     this.minFramesToConfirm = minFramesToConfirm;
     this.forgetMs = forgetMs;
@@ -25,7 +27,13 @@ export default class DetectionVoiceBridge {
     this.tracked = new Map();
   }
 
-  handlePredictions(predictions: Prediction[] = []) {
+  /**
+   * Handle predictions.
+   * predictions: array from COCO-SSD: { class, score, bbox? }
+   * Optionally pass frameWidth and frameHeight so we can compute positions/distances:
+   * handlePredictions(predictions, frameWidth?, frameHeight?)
+   */
+  handlePredictions(predictions: Prediction[] = [], frameWidth?: number, frameHeight?: number) {
     const now = Date.now();
     const seenLabels = new Set<string>();
 
@@ -40,8 +48,8 @@ export default class DetectionVoiceBridge {
       this.tracked.set(label, recorded);
 
       if (recorded.consecutiveSeen === this.minFramesToConfirm) {
-        const text = this._formatAppearance(label, p);
-        const priority = (label === 'person') ? this.speakPriority + 1 : this.speakPriority;
+        const text = this._formatAppearance(label, p, frameWidth, frameHeight);
+        const priority = (label === 'person' || label === 'persona') ? this.speakPriority + 1 : this.speakPriority;
         if ((now - recorded.lastSpokenTs) > 1500) {
           this.vm.speak(text, priority, { interrupt: false });
           recorded.lastSpokenTs = now;
@@ -79,11 +87,77 @@ export default class DetectionVoiceBridge {
     }
   }
 
-  _formatAppearance(label: string, prediction: Prediction) {
-    return `${label} detectado`;
+  _mapLabelToSpanish(label: string) {
+    const map: Record<string, string> = {
+      person: 'persona',
+      dog: 'perro',
+      cat: 'gato',
+      car: 'auto',
+      bicycle: 'bicicleta',
+      bottle: 'botella',
+      chair: 'silla',
+      couch: 'sofá',
+      tv: 'televisor',
+      laptop: 'computadora',
+    };
+    return map[label] || label;
+  }
+
+  _computePositionAndDistance(prediction: Prediction, frameW?: number, frameH?: number) {
+    const bbox = prediction.bbox;
+    if (!bbox || bbox.length < 4) return { position: null, distance: null };
+
+    let [x, y, w, h] = bbox;
+    const isNormalized = (w <= 1 && h <= 1 && x <= 1 && y <= 1);
+    let relCenterX = 0.5;
+    let relArea = 0.01;
+
+    if (isNormalized) {
+      relCenterX = (x + w / 2);
+      relArea = w * h;
+    } else if (frameW && frameH) {
+      relCenterX = (x + w / 2) / frameW;
+      relArea = (w * h) / (frameW * frameH);
+    } else {
+      const fallbackW = 640;
+      const fallbackH = 480;
+      relCenterX = (x + w / 2) / fallbackW;
+      relArea = (w * h) / (fallbackW * fallbackH);
+    }
+
+    let position: string | null = null;
+    if (relCenterX < 0.33) position = 'a la izquierda';
+    else if (relCenterX > 0.66) position = 'a la derecha';
+    else position = 'al frente';
+
+    let distance: string | null = null;
+    if (relArea > 0.12) distance = 'muy cerca';
+    else if (relArea > 0.04) distance = 'cerca';
+    else if (relArea > 0.01) distance = 'a media distancia';
+    else distance = 'lejos';
+
+    return { position, distance };
+  }
+
+  _formatAppearance(label: string, prediction: Prediction, frameW?: number, frameH?: number) {
+    const esp = this._mapLabelToSpanish(label);
+    const ctx = this._computePositionAndDistance(prediction, frameW, frameH);
+    const fragments: string[] = [];
+
+    const name = esp.charAt(0).toUpperCase() + esp.slice(1);
+
+    if (ctx.position) fragments.push(ctx.position);
+    if (ctx.distance) fragments.push(ctx.distance);
+
+    if (fragments.length) {
+      return `${name} ${fragments.join(', ')}.`;
+    }
+    const confidencePct = Math.round((prediction.score || 0) * 100);
+    return `${name} detectada, confianza ${confidencePct}%.`;
   }
 
   _formatDisappearance(label: string) {
-    return `${label} ya no está`;
+    const esp = this._mapLabelToSpanish(label);
+    return `${esp.charAt(0).toUpperCase() + esp.slice(1)} ya no visible.`;
   }
 }
