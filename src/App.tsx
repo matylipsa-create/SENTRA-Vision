@@ -2,18 +2,14 @@ import { useState } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { useDemoEventGenerator } from './hooks/useDemoEventGenerator';
 import { useMetricsUpdater } from './hooks/useMetricsUpdater';
-import { useRealModeSensors } from './hooks/useRealModeSensors';
 import TopBar from './components/TopBar';
 import BottomNav from './components/BottomNav';
 import DemoModeBanner from './components/DemoModeBanner';
 import AegisMetricsPanel from './components/AegisMetricsPanel';
 import OnboardingGuide from './components/OnboardingGuide';
-import Landing from './components/Landing';
 import Settings from './pages/Settings';
-import Dashboard from './pages/Dashboard';
+import AccessibleMinimalUI from './components/AccessibleMinimalUI';
 import type { PageKey } from './types';
-import Regulation from './pages/Regulation';
-import Operations from './pages/Operations';
 
 const ONBOARDING_KEY = 'aegis-onboarded';
 
@@ -21,10 +17,8 @@ function AppShell() {
   const { state, setMode, setCurrentPage, setDemoMode } = useApp();
   useDemoEventGenerator();
   useMetricsUpdater();
-  const { setVideo } = useRealModeSensors();
 
-  const [showLanding, setShowLanding] = useState(true);
-  const [page, setPage] = useState('dashboard');
+  const [page, setPage] = useState<PageKey>('dashboard');
   const [showSettings, setShowSettings] = useState(false);
   const [showMetrics, setShowMetrics] = useState(false);
   const [bannerHidden, setBannerHidden] = useState(false);
@@ -49,20 +43,11 @@ function AppShell() {
   const powerSaving = state.settings.powerSavingMode;
 
   const handleNavigate = (p: string) => {
-    setPage(p);
+    setPage(p as PageKey);
     if (p === 'dashboard' || p === 'regulation' || p === 'operations') {
       setCurrentPage(p as PageKey);
     }
   };
-
-  const handleEnterApp = () => {
-    setShowLanding(false);
-    setDemoMode(true);
-  };
-
-  if (showLanding) {
-    return <Landing onEnterApp={handleEnterApp} />;
-  }
 
   return (
     <div className={`h-screen flex flex-col ${powerSaving ? 'power-saving-mode' : ''}`} style={{ background: 'linear-gradient(180deg, #0A0C12 0%, #000000 100%)' }}>
@@ -74,11 +59,9 @@ function AppShell() {
 
       {showBanner && <DemoModeBanner onHide={() => setBannerHidden(true)} />}
 
-      <main className="flex-1 overflow-y-auto overflow-x-hidden px-4 pb-24"
-        style={{ paddingTop, WebkitOverflowScrolling: 'touch' }}>
-        {page === 'dashboard' && <Dashboard isTechnical={state.mode === 'technical'} onArm={handleArm} setVideo={setVideo} />}
-        {page === 'regulation' && <Regulation />}
-        {page === 'operations' && <Operations />}
+      <main className="flex-1 overflow-y-auto overflow-x-hidden px-4 pb-24" style={{ paddingTop, WebkitOverflowScrolling: 'touch' }}>
+        {/* Render minimal accessible UI as the app's main view */}
+        <AccessibleMinimalUI />
       </main>
 
       <BottomNav
