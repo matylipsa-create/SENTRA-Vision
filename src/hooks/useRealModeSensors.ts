@@ -1,12 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
-import { generateEvent } from '../events';
 
 // NOTE:
-// The repo didn't include a ../vision/detector module. To avoid a broken import,
-// provide a small, self-contained loader/detector here that uses the installed
-// @tensorflow-models/coco-ssd and @tensorflow/tfjs packages. We keep types loose
-// (any) to avoid strict TS coupling with @types packages.
+// The repo didn't include a ../vision/detector or ../events module. To avoid broken imports,
+// this hook provides a self-contained loader/detector using @tensorflow-models/coco-ssd.
+// Calls that previously emitted a global "generateEvent" have been removed — detections are
+// still set into app state via setDetectedObjects and passed to the bridge if present.
 
 let _model: any | null = null;
 let _loadingModel = false;
@@ -17,9 +16,8 @@ let _loadingModel = false;
 async function loadModel() {
   if (_model) return _model;
   if (_loadingModel) {
-    // wait until previously started load finishes
     while (_loadingModel && !_model) {
-      // small busy wait; in practice this will be fast
+      // small wait until model loads
       // eslint-disable-next-line no-await-in-loop
       await new Promise((r) => setTimeout(r, 50));
     }
@@ -27,16 +25,12 @@ async function loadModel() {
   }
   _loadingModel = true;
   try {
-    // dynamic import to avoid bundling issues when running in environments without TF
     const coco = await import('@tensorflow-models/coco-ssd');
-    // ensure tf backend loaded (tfjs is a dependency)
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // ensure tfjs loaded
     await import('@tensorflow/tfjs');
     _model = await coco.load();
     return _model;
   } catch (e) {
-    // If model fails to load, leave _model null and surface no detections.
-    // Consumers should handle absence gracefully.
     _model = null;
     return null;
   } finally {
@@ -44,22 +38,19 @@ async function loadModel() {
   }
 }
 
-/**
- * Has the model finished loading?
- */
+/** Has the model finished loading? */
 function isModelLoaded(): boolean {
   return _model !== null;
 }
 
 /**
  * Run detection on the given HTMLVideoElement.
- * Returns an array of prediction objects from coco-ssd, filtered by minScore.
+ * Returns an array of prediction objects from coco-ssd filtered by minScore.
  */
 async function detectObjects(video: HTMLVideoElement, minScore = 0.5): Promise<any[]> {
   const model = await loadModel();
   if (!model) return [];
   try {
-    // coco-ssd `detect` accepts video elements directly
     const preds: any[] = await model.detect(video as any);
     if (!Array.isArray(preds)) return [];
     if (typeof minScore !== 'number') return preds;
@@ -107,16 +98,15 @@ export default function useRealModeSensors() {
     // Start model loading in background (non-blocking)
     loadModel().catch(() => { /* ignore load errors here */ });
 
-    // Start detection loop when model is loaded or after load completes
+    // Start detection loop when model is loaded or after a short wait
     const startWhenReady = async () => {
-      // wait until model loaded (but don't loop forever)
       let tries = 0;
       while (!_model && tries < 40) { // wait up to ~2s (40*50ms)
         // eslint-disable-next-line no-await-in-loop
         await new Promise((r) => setTimeout(r, 50));
         tries += 1;
       }
-      // proceed even if model not loaded; detectObjects will gracefully return []
+
       const runDetection = async () => {
         if (cancelledRef.current) return;
         if (!videoRef.current || !videoRef.current.videoWidth) {
@@ -130,24 +120,21 @@ export default function useRealModeSensors() {
             try {
               setDetectedObjects(objects);
             } catch (_) {}
+
             try {
               bridgeRef.current?.handlePredictions(objects || []);
             } catch (_) {}
 
+            // Previously, the code emitted a global event (generateEvent) when
+            // objects were detected. That function/module is not present in this
+            // repository, so we do not call it here. If you need centralized event
+            // emission, implement generateEvent in src/lib/events.ts and reintroduce
+            // the call.
             if (objects.length > 0) {
               const now = Date.now();
               if (now - lastEventTimeRef.current > 5000) {
                 lastEventTimeRef.current = now;
-                const topObject = objects[0];
-                generateEvent({
-                  type: 'OBJECT_DETECTED',
-                  metadata: {
-                    source: 'tfjs-coco-ssd',
-                    confidence: Math.round((topObject as any).score * 100),
-                    objectClass: (topObject as any).class,
-                    objectCount: objects.length,
-                  },
-                }, null, objects);
+                // Optional: additional per-detection logic can go here.
               }
             }
           }
