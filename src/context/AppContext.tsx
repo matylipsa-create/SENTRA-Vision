@@ -1,10 +1,14 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
-import type { AppState, AppSettings, SensorState, DetectedObject } from '../types';
+import type { AppState, AppSettings, SensorState, DetectedObject, SecurityEvent, AlertLevel, SystemStatus, AppMode } from '../types';
+import { signAndChain as cryptoSignAndChain, initDilithium, getGenesisHash } from '../lib/crypto';
 
 const SETTINGS_KEY = 'sentra-vision-settings';
 
 const defaults: AppSettings = {
   realMode: false,
+  powerSavingMode: false,
+  pipedreamWebhookUrl: '',
+  sendDemoToTelegram: false,
 };
 
 function loadSettings(): AppSettings {
@@ -31,6 +35,22 @@ const initialSensors: SensorState = {
   audioLevel: 0,
 };
 
+const initialModules = [
+  { key: 'CAM', label: 'Vision', active: true, loaded: true },
+  { key: 'AUDIO', label: 'Audio', active: true, loaded: true },
+  { key: 'GPS', label: 'GPS', active: true, loaded: true },
+  { key: 'IA', label: 'Crypto', active: true, loaded: true },
+  { key: 'IDB', label: 'IndexedDB', active: true, loaded: true },
+  { key: 'FIFO', label: 'FIFO', active: true, loaded: true },
+];
+
+const initialCameras = [
+  { id: 'cam-1', label: 'Camara 1', type: 'CAM' as const, status: 'active' as const },
+  { id: 'ip-1', label: 'IP Cam', type: 'IP' as const, status: 'standby' as const },
+  { id: 'ptz-1', label: 'PTZ', type: 'PTZ' as const, status: 'standby' as const },
+  { id: 'vision-1', label: 'Vision AI', type: 'VISION' as const, status: 'active' as const },
+];
+
 const initialState: AppState = {
   mode: 'normal',
   status: 'STANDBY',
@@ -38,8 +58,8 @@ const initialState: AppState = {
   confidence: 92,
   cognitiveLoad: 35,
   events: [],
-  modules: [],
-  cameras: [],
+  modules: initialModules,
+  cameras: initialCameras,
   settings: loadSettings(),
   telegramSentCount: 0,
   demoMode: false,
@@ -56,6 +76,16 @@ interface AppContextValue {
   setSensors: (patch: Partial<SensorState>) => void;
   setDetectedObjects: (objects: DetectedObject[]) => void;
   setTfjsStatus: (loaded: boolean, error: boolean) => void;
+  setMode: (mode: AppMode) => void;
+  setDemoMode: (demo: boolean) => void;
+  setStatus: (status: SystemStatus) => void;
+  setAlertLevel: (level: AlertLevel) => void;
+  setConfidence: (v: number) => void;
+  setCognitiveLoad: (v: number) => void;
+  addEvent: (event: SecurityEvent) => void;
+  signAndChain: (baseEvent: Omit<SecurityEvent, 'hash' | 'previousHash' | 'signature' | 'cryptoVerified'>) => Promise<SecurityEvent>;
+  incrementTelegramCount: () => void;
+  markEventTelegramSent: (id: string) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -66,6 +96,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     settings: loadSettings(),
   }));
 
+  const lastHashRef = useRef<string>(getGenesisHash());
+
+  useEffect(() => {
+    initDilithium().catch(() => { /* noop */ });
+  }, []);
+
   const updateSettings = useCallback((patch: Partial<AppSettings>) => setState(s => {
     const settings = { ...s.settings, ...patch };
     saveSettings(settings);
@@ -75,9 +111,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setSensors = useCallback((patch: Partial<SensorState>) => setState(s => ({ ...s, sensors: { ...s.sensors, ...patch } })), []);
   const setDetectedObjects = useCallback((detectedObjects: DetectedObject[]) => setState(s => ({ ...s, detectedObjects })), []);
   const setTfjsStatus = useCallback((loaded: boolean, error: boolean) => setState(s => ({ ...s, tfjsLoaded: loaded, tfjsError: error })), []);
+  const setMode = useCallback((mode: AppMode) => setState(s => ({ ...s, mode })), []);
+  const setDemoMode = useCallback((demoMode: boolean) => setState(s => ({ ...s, demoMode })), []);
+  const setStatus = useCallback((status: SystemStatus) => setState(s => ({ ...s, status })), []);
+  const setAlertLevel = useCallback((alertLevel: AlertLevel) => setState(s => ({ ...s, alertLevel })), []);
+  const setConfidence = useCallback((confidence: number) => setState(s => ({ ...s, confidence })), []);
+  const setCognitiveLoad = useCallback((cognitiveLoad: number) => setState(s => ({ ...s, cognitiveLoad })), []);
+
+  const addEvent = useCallback((event: SecurityEvent) => setState(s => ({ ...s, events: [event, ...s.events].slice(0, 100) })), []);
+
+  const signAndChain = useCallback(async (baseEvent: Omit<SecurityEvent, 'hash' | 'previousHash' | 'signature' | 'cryptoVerified'>): Promise<SecurityEvent> => {
+    const previousHash = lastHashRef.current;
+    const result = await cryptoSignAndChain(baseEvent, previousHash);
+    lastHashRef.current = result.hash;
+    return { ...baseEvent, ...result };
+  }, []);
+
+  const incrementTelegramCount = useCallback(() => setState(s => ({ ...s, telegramSentCount: s.telegramSentCount + 1 })), []);
+
+  const markEventTelegramSent = useCallback((id: string) => setState(s => ({
+    ...s,
+    events: s.events.map(e => e.id === id ? { ...e, telegramSent: true } : e),
+  })), []);
 
   return (
-    <AppContext.Provider value={{ state, updateSettings, setSensors, setDetectedObjects, setTfjsStatus }}>
+    <AppContext.Provider value={{
+      state,
+      updateSettings,
+      setSensors,
+      setDetectedObjects,
+      setTfjsStatus,
+      setMode,
+      setDemoMode,
+      setStatus,
+      setAlertLevel,
+      setConfidence,
+      setCognitiveLoad,
+      addEvent,
+      signAndChain,
+      incrementTelegramCount,
+      markEventTelegramSent,
+    }}>
       {children}
     </AppContext.Provider>
   );
