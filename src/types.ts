@@ -32,9 +32,6 @@ export interface CameraState {
 }
 
 export interface AppSettings {
-  pipedreamWebhookUrl: string;
-  sendDemoToTelegram: boolean;
-  powerSavingMode: boolean;
   realMode: boolean;
 }
 
