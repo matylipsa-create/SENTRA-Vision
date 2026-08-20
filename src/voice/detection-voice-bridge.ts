@@ -48,10 +48,10 @@ export default class DetectionVoiceBridge {
       recorded.count += 1;
       this.tracked.set(label, recorded);
 
-      if (recorded.consecutiveSeen === this.minFramesToConfirm) {
+      if (recorded.consecutiveSeen >= this.minFramesToConfirm) {
         const text = this._formatAppearance(label, p, frameWidth, frameHeight);
         const priority = (label === 'person' || label === 'persona') ? this.speakPriority + 1 : this.speakPriority;
-        if ((now - recorded.lastSpokenTs) > 1500) {
+        if ((now - recorded.lastSpokenTs) > 3000) {
           this._speakWithMoralCheck(text, priority, p.score);
           recorded.lastSpokenTs = now;
           this.tracked.set(label, recorded);
@@ -115,6 +115,57 @@ export default class DetectionVoiceBridge {
       couch: 'sofá',
       tv: 'televisor',
       laptop: 'computadora',
+      motorcycle: 'moto',
+      bus: 'colectivo',
+      truck: 'camión',
+      backpack: 'mochila',
+      handbag: 'bolso',
+      suitcase: 'valija',
+      cell_phone: 'celular',
+      cup: 'taza',
+      fork: 'tenedor',
+      knife: 'cuchillo',
+      spoon: 'cuchara',
+      bowl: 'cuenco',
+      banana: 'banana',
+      apple: 'manzana',
+      sandwich: 'sándwich',
+      orange: 'naranja',
+      clock: 'reloj',
+      vase: 'jarrón',
+      scissors: 'tijeras',
+      teddy_bear: 'oso de peluche',
+      hair_drier: 'secador de pelo',
+      toothbrush: 'cepillo de dientes',
+      toilet: 'inodoro',
+      sink: 'pileta',
+      mouse: 'mouse',
+      keyboard: 'teclado',
+      remote: 'control remoto',
+      microwave: 'microondas',
+      oven: 'horno',
+      toaster: 'tostadora',
+      refrigerator: 'heladera',
+      book: 'libro',
+      potted_plant: 'planta',
+      dining_table: 'mesa',
+      bed: 'cama',
+      sports_ball: 'pelota',
+      kite: 'cometa',
+      baseball_bat: 'bate de béisbol',
+      baseball_glove: 'guante de béisbol',
+      skateboard: 'skate',
+      surfboard: 'tabla de surf',
+      tennis_racket: 'raqueta de tenis',
+      frisbee: 'frisbee',
+      skis: 'esquíes',
+      snowboard: 'snowboard',
+      stop_sign: 'cartel de pare',
+      fire_hydrant: 'boca de incendio',
+      parking_meter: 'parquímetro',
+      bench: 'banco',
+      umbrella: 'paraguas',
+      tie: 'corbata',
     };
     return map[label] || label;
   }
@@ -168,8 +219,7 @@ export default class DetectionVoiceBridge {
     if (fragments.length) {
       return `${name} ${fragments.join(', ')}.`;
     }
-    const confidencePct = Math.round((prediction.score || 0) * 100);
-    return `${name} detectada, confianza ${confidencePct}%.`;
+    return `${name} detectada.`;
   }
 
   _formatDisappearance(label: string) {

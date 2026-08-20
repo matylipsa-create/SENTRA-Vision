@@ -1,35 +1,44 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import useRealModeSensors from '../hooks/useRealModeSensors';
 import DetectionVoiceBridge from '../voice/detection-voice-bridge';
 import vm from '../voice/manager';
 
+const DETECTION_INTERVAL_MS = 1500;
+
 export default function AccessibleMinimalUI(): JSX.Element {
-  const { state, updateSettings, setSensors, setTfjsStatus } = useApp();
-  const { setVideo } = useRealModeSensors();
+  const { state, updateSettings, setSensors, setTfjsStatus, setDetectedObjects } = useApp();
 
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const detectionRafRef = useRef<number | null>(null);
+  const detectionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const bridgeRef = useRef<DetectionVoiceBridge | null>(null);
   const modelRef = useRef<any>(null);
   const loadingModelRef = useRef(false);
+  const [statusMsg, setStatusMsg] = useState('Sentra Vision listo. Toque el botón para activar la descripción del entorno.');
+  const [cameraReady, setCameraReady] = useState(false);
+  const [modelReady, setModelReady] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const realMode = !!state.settings.realMode;
-  const audioStatus = realMode ? 'Activo' : 'Inactivo';
-  const ariaStatus = `Audio ${audioStatus}`;
 
-  // Instantiate the voice bridge once
   useEffect(() => {
-    bridgeRef.current = new DetectionVoiceBridge();
+    bridgeRef.current = new DetectionVoiceBridge(undefined, {
+      scoreThreshold: 0.5,
+      minFramesToConfirm: 1,
+      forgetMs: 3000,
+      speakPriority: 0,
+    });
     return () => {
-      if (detectionRafRef.current) cancelAnimationFrame(detectionRafRef.current);
+      if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      }
+      vm.cancel();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load COCO-SSD model (self-contained, no external detector import)
   const loadModel = useCallback(async () => {
     if (modelRef.current || loadingModelRef.current) return modelRef.current;
     loadingModelRef.current = true;
@@ -38,32 +47,34 @@ export default function AccessibleMinimalUI(): JSX.Element {
       await import('@tensorflow/tfjs');
       modelRef.current = await coco.load();
       setTfjsStatus(true, false);
+      setModelReady(true);
       return modelRef.current;
     } catch {
       modelRef.current = null;
       setTfjsStatus(false, true);
+      setModelReady(false);
       return null;
     } finally {
       loadingModelRef.current = false;
     }
   }, [setTfjsStatus]);
 
-  // Start / stop camera stream based on realMode
   const startStream = useCallback(async () => {
     if (!realMode) {
-      // stop existing stream
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(t => t.stop());
         streamRef.current = null;
       }
       if (videoRef.current) videoRef.current.srcObject = null;
       setSensors({ cameraActive: false, cameraError: null });
+      setCameraReady(false);
       return;
     }
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         const msg = 'getUserMedia no soportado en este navegador';
         setSensors({ cameraError: msg, cameraActive: false });
+        setErrorMsg(msg);
         return;
       }
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -76,78 +87,78 @@ export default function AccessibleMinimalUI(): JSX.Element {
         await videoRef.current.play().catch(() => {});
       }
       setSensors({ cameraActive: true, cameraError: null });
+      setCameraReady(true);
+      setErrorMsg(null);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Error al acceder a la camara';
+      const msg = err instanceof Error ? err.message : 'Error al acceder a la cámara';
       setSensors({ cameraError: msg, cameraActive: false });
+      setErrorMsg(msg);
+      setStatusMsg(`Error: ${msg}. Toque el botón para reintentar.`);
     }
   }, [realMode, setSensors]);
 
-  // Detection loop — feeds predictions to DetectionVoiceBridge
   const runDetection = useCallback(async () => {
-    if (!realMode) return;
+    if (!realMode || !cameraReady) return;
 
-    const model = await loadModel();
-    if (!model || !videoRef.current || !videoRef.current.videoWidth) {
-      detectionRafRef.current = requestAnimationFrame(runDetection);
-      return;
-    }
+    const model = modelRef.current;
+    if (!model || !videoRef.current || !videoRef.current.videoWidth) return;
 
     try {
       const predictions = await model.detect(videoRef.current, 20, 0.5);
       const videoW = videoRef.current.videoWidth;
       const videoH = videoRef.current.videoHeight;
+
+      setDetectedObjects(predictions);
+
       if (bridgeRef.current && predictions.length > 0) {
         bridgeRef.current.handlePredictions(predictions, videoW, videoH);
       }
     } catch {
       // swallow per-frame errors
     }
+  }, [realMode, cameraReady, setDetectedObjects]);
 
-    detectionRafRef.current = requestAnimationFrame(runDetection);
-  }, [realMode, loadModel]);
-
-  // Manage camera + detection lifecycle
   useEffect(() => {
     startStream();
 
     if (realMode) {
-      // kick off detection loop
-      detectionRafRef.current = requestAnimationFrame(runDetection);
+      loadModel().then(() => {
+        setStatusMsg('Cámara activa. Describiendo el entorno.');
+        vm.speak('Cámara activa. Comenzando a describir el entorno.', 2, { interrupt: true, rate: 1.15 });
+      });
+
+      if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
+      detectionTimerRef.current = setInterval(runDetection, DETECTION_INTERVAL_MS);
     } else {
-      if (detectionRafRef.current) {
-        cancelAnimationFrame(detectionRafRef.current);
-        detectionRafRef.current = null;
+      if (detectionTimerRef.current) {
+        clearInterval(detectionTimerRef.current);
+        detectionTimerRef.current = null;
+      }
+      setDetectedObjects([]);
+      if (cameraReady) {
+        setStatusMsg('Descripción detenida. Toque el botón para reactivar.');
+        vm.speak('Descripción detenida.', 2, { interrupt: true, rate: 1.15 });
       }
     }
 
     return () => {
-      if (detectionRafRef.current) {
-        cancelAnimationFrame(detectionRafRef.current);
-        detectionRafRef.current = null;
+      if (detectionTimerRef.current) {
+        clearInterval(detectionTimerRef.current);
+        detectionTimerRef.current = null;
       }
     };
-  }, [realMode, startStream, runDetection]);
-
-  // Pass video element to the sensors hook (for any other consumers)
-  useEffect(() => {
-    setVideo(videoRef.current);
-  });
+  }, [realMode, startStream, loadModel, runDetection, cameraReady, setDetectedObjects]);
 
   const toggle = () => {
+    if (navigator.vibrate) navigator.vibrate(50);
     updateSettings({ realMode: !realMode });
 
-    try {
-      const text = realMode ? 'Desactivando la descripción' : 'Activando la descripción';
-      vm.speak(text, 1, { interrupt: true });
-    } catch {
-      try {
-        if ('speechSynthesis' in window) {
-          const utter = new SpeechSynthesisUtterance(realMode ? 'Desactivando' : 'Activando');
-          utter.lang = 'es-ES';
-          window.speechSynthesis.cancel();
-          window.speechSynthesis.speak(utter);
-        }
-      } catch {}
+    if (!realMode) {
+      setStatusMsg('Activando cámara y descripción...');
+      vm.speak('Activando la descripción del entorno.', 2, { interrupt: true, rate: 1.15 });
+    } else {
+      setStatusMsg('Desactivando descripción...');
+      vm.speak('Desactivando la descripción del entorno.', 2, { interrupt: true, rate: 1.15 });
     }
 
     setTimeout(() => btnRef.current?.focus(), 200);
@@ -156,6 +167,9 @@ export default function AccessibleMinimalUI(): JSX.Element {
   useEffect(() => {
     btnRef.current?.focus();
   }, []);
+
+  const buttonLabel = realMode ? 'Desactivar descripción del entorno' : 'Activar descripción del entorno';
+  const buttonState = realMode ? 'Desactivar' : 'Activar';
 
   return (
     <main
@@ -173,7 +187,6 @@ export default function AccessibleMinimalUI(): JSX.Element {
         gap: 20,
       }}
     >
-      {/* Hidden camera video — aria-hidden because the voice description replaces it for blind users */}
       <video
         ref={videoRef}
         autoPlay
@@ -204,21 +217,23 @@ export default function AccessibleMinimalUI(): JSX.Element {
         <div
           aria-live="polite"
           aria-atomic="true"
+          role="status"
           style={{
             textAlign: 'center',
-            fontSize: 20,
-            fontWeight: 700,
+            fontSize: 18,
+            fontWeight: 600,
             color: '#FDE047',
+            minHeight: 28,
           }}
         >
-          {ariaStatus}
+          {errorMsg ? `Error: ${errorMsg}` : statusMsg}
         </div>
 
         <button
           ref={btnRef}
           onClick={toggle}
           aria-pressed={realMode}
-          aria-label={realMode ? 'Desactivar descripción del entorno' : 'Activar descripción del entorno'}
+          aria-label={buttonLabel}
           style={{
             all: 'unset',
             cursor: 'pointer',
@@ -233,10 +248,11 @@ export default function AccessibleMinimalUI(): JSX.Element {
             textAlign: 'center',
             boxShadow: '0 6px 18px rgba(0,0,0,0.6)',
             userSelect: 'none',
+            transition: 'background 0.2s ease',
           }}
         >
           <span style={{ fontSize: 36, fontWeight: 800, lineHeight: 1 }}>
-            {realMode ? 'Desactivar' : 'Activar'}
+            {buttonState}
           </span>
         </button>
 
@@ -247,13 +263,40 @@ export default function AccessibleMinimalUI(): JSX.Element {
             color: '#E5E7EB',
             opacity: 0.9,
           }}
+          aria-hidden="true"
         >
           Presione el botón para {realMode ? 'detener la descripción' : 'comenzar a describir el entorno'}.
         </div>
 
         <div
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            gap: 12,
+            marginTop: 8,
+          }}
+          aria-hidden="true"
+        >
+          <span style={{
+            fontSize: 13,
+            color: cameraReady ? '#22C55E' : '#6B7280',
+            fontWeight: 600,
+          }}>
+            Cámara: {cameraReady ? 'Activa' : 'Inactiva'}
+          </span>
+          <span style={{
+            fontSize: 13,
+            color: modelReady ? '#22C55E' : '#6B7280',
+            fontWeight: 600,
+          }}>
+            IA: {modelReady ? 'Cargada' : 'Cargando...'}
+          </span>
+        </div>
+
+        <div
           id="a11y-announcer"
           aria-live="assertive"
+          aria-atomic="true"
           style={{
             position: 'absolute',
             left: '-10000px',
