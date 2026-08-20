@@ -3,7 +3,9 @@ import { useApp } from '../context/AppContext';
 import DetectionVoiceBridge from '../voice/detection-voice-bridge';
 import vm from '../voice/manager';
 
-const DETECTION_INTERVAL_MS = 1500;
+const DETECTION_INTERVAL_MS = 1000;
+const OCR_INTERVAL_MS = 5000;
+const OCR_CANVAS_W = 640;
 
 export default function AccessibleMinimalUI(): JSX.Element {
   const { state, updateSettings, setSensors, setTfjsStatus, setDetectedObjects } = useApp();
@@ -12,28 +14,39 @@ export default function AccessibleMinimalUI(): JSX.Element {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ocrTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const bridgeRef = useRef<DetectionVoiceBridge | null>(null);
   const modelRef = useRef<any>(null);
   const loadingModelRef = useRef(false);
+  const ocrWorkerRef = useRef<any>(null);
+  const ocrLoadingRef = useRef(false);
+  const ocrBusyRef = useRef(false);
   const [statusMsg, setStatusMsg] = useState('Sentra Vision listo. Toque el botón para activar la descripción del entorno.');
   const [cameraReady, setCameraReady] = useState(false);
   const [modelReady, setModelReady] = useState(false);
+  const [ocrReady, setOcrReady] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [lastOcrText, setLastOcrText] = useState<string | null>(null);
 
   const realMode = !!state.settings.realMode;
 
   useEffect(() => {
     bridgeRef.current = new DetectionVoiceBridge(undefined, {
       scoreThreshold: 0.5,
-      minFramesToConfirm: 1,
+      minFramesToConfirm: 3,
       forgetMs: 3000,
       speakPriority: 0,
     });
     return () => {
       if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
+      if (ocrTimerRef.current) clearInterval(ocrTimerRef.current);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(t => t.stop());
         streamRef.current = null;
+      }
+      if (ocrWorkerRef.current) {
+        ocrWorkerRef.current.terminate().catch(() => {});
+        ocrWorkerRef.current = null;
       }
       vm.cancel();
     };
@@ -45,7 +58,7 @@ export default function AccessibleMinimalUI(): JSX.Element {
     try {
       const coco = await import('@tensorflow-models/coco-ssd');
       await import('@tensorflow/tfjs');
-      modelRef.current = await coco.load();
+      modelRef.current = await coco.load({ base: 'lite_mobilenet_v2' });
       setTfjsStatus(true, false);
       setModelReady(true);
       return modelRef.current;
@@ -58,6 +71,24 @@ export default function AccessibleMinimalUI(): JSX.Element {
       loadingModelRef.current = false;
     }
   }, [setTfjsStatus]);
+
+  const loadOcrWorker = useCallback(async () => {
+    if (ocrWorkerRef.current || ocrLoadingRef.current) return ocrWorkerRef.current;
+    ocrLoadingRef.current = true;
+    try {
+      const { createWorker } = await import('tesseract.js');
+      const worker = await createWorker({ langPath: 'spa' } as any);
+      ocrWorkerRef.current = worker;
+      setOcrReady(true);
+      return worker;
+    } catch {
+      ocrWorkerRef.current = null;
+      setOcrReady(false);
+      return null;
+    } finally {
+      ocrLoadingRef.current = false;
+    }
+  }, []);
 
   const startStream = useCallback(async () => {
     if (!realMode) {
@@ -118,6 +149,35 @@ export default function AccessibleMinimalUI(): JSX.Element {
     }
   }, [realMode, cameraReady, setDetectedObjects]);
 
+  const runOcr = useCallback(async () => {
+    if (!realMode || !cameraReady || !ocrWorkerRef.current || ocrBusyRef.current) return;
+    if (!videoRef.current || !videoRef.current.videoWidth) return;
+
+    ocrBusyRef.current = true;
+    try {
+      const video = videoRef.current;
+      const canvas = document.createElement('canvas');
+      const scale = OCR_CANVAS_W / video.videoWidth;
+      canvas.width = OCR_CANVAS_W;
+      canvas.height = Math.round(video.videoHeight * scale);
+      const ctx2d = canvas.getContext('2d');
+      if (!ctx2d) return;
+      ctx2d.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const { data } = await ocrWorkerRef.current.recognize(canvas);
+      const text = (data?.text || '').trim();
+
+      if (text && text.length >= 3 && text !== lastOcrText) {
+        setLastOcrText(text);
+        bridgeRef.current?.speakOcrText(text);
+      }
+    } catch {
+      // swallow OCR errors
+    } finally {
+      ocrBusyRef.current = false;
+    }
+  }, [realMode, cameraReady, lastOcrText]);
+
   useEffect(() => {
     startStream();
 
@@ -127,14 +187,24 @@ export default function AccessibleMinimalUI(): JSX.Element {
         vm.speak('Cámara activa. Comenzando a describir el entorno.', 2, { interrupt: true, rate: 1.15 });
       });
 
+      loadOcrWorker();
+
       if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
       detectionTimerRef.current = setInterval(runDetection, DETECTION_INTERVAL_MS);
+
+      if (ocrTimerRef.current) clearInterval(ocrTimerRef.current);
+      ocrTimerRef.current = setInterval(runOcr, OCR_INTERVAL_MS);
     } else {
       if (detectionTimerRef.current) {
         clearInterval(detectionTimerRef.current);
         detectionTimerRef.current = null;
       }
+      if (ocrTimerRef.current) {
+        clearInterval(ocrTimerRef.current);
+        ocrTimerRef.current = null;
+      }
       setDetectedObjects([]);
+      setLastOcrText(null);
       if (cameraReady) {
         setStatusMsg('Descripción detenida. Toque el botón para reactivar.');
         vm.speak('Descripción detenida.', 2, { interrupt: true, rate: 1.15 });
@@ -146,8 +216,12 @@ export default function AccessibleMinimalUI(): JSX.Element {
         clearInterval(detectionTimerRef.current);
         detectionTimerRef.current = null;
       }
+      if (ocrTimerRef.current) {
+        clearInterval(ocrTimerRef.current);
+        ocrTimerRef.current = null;
+      }
     };
-  }, [realMode, startStream, loadModel, runDetection, cameraReady, setDetectedObjects]);
+  }, [realMode, startStream, loadModel, loadOcrWorker, runDetection, runOcr, cameraReady, setDetectedObjects]);
 
   const toggle = () => {
     if (navigator.vibrate) navigator.vibrate(50);
@@ -274,6 +348,7 @@ export default function AccessibleMinimalUI(): JSX.Element {
             justifyContent: 'center',
             gap: 12,
             marginTop: 8,
+            flexWrap: 'wrap',
           }}
           aria-hidden="true"
         >
@@ -291,7 +366,32 @@ export default function AccessibleMinimalUI(): JSX.Element {
           }}>
             IA: {modelReady ? 'Cargada' : 'Cargando...'}
           </span>
+          <span style={{
+            fontSize: 13,
+            color: ocrReady ? '#22C55E' : '#6B7280',
+            fontWeight: 600,
+          }}>
+            OCR: {ocrReady ? 'Listo' : 'Cargando...'}
+          </span>
         </div>
+
+        {lastOcrText && (
+          <div
+            aria-live="polite"
+            style={{
+              textAlign: 'center',
+              fontSize: 14,
+              color: '#93C5FD',
+              minHeight: 20,
+              padding: '8px 12px',
+              background: 'rgba(30,58,138,0.3)',
+              borderRadius: 8,
+            }}
+            aria-label={`Último texto detectado: ${lastOcrText}`}
+          >
+            Texto: {lastOcrText}
+          </div>
+        )}
 
         <div
           id="a11y-announcer"

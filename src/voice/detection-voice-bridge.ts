@@ -5,19 +5,56 @@ import { shouldSpeak, type MoralContext } from '../core/MoralNode';
 
 interface Prediction { class: string; score: number; bbox?: number[] }
 
+type RelevanceTier = 'obstacle' | 'navigation' | 'everyday' | 'low';
+
+const RELEVANCE_WEIGHTS: Record<RelevanceTier, number> = {
+  obstacle: 3,
+  navigation: 2,
+  everyday: 1,
+  low: 0,
+};
+
+const NAVIGATION_CLASSES: Set<string> = new Set([
+  'person', 'chair', 'dining_table', 'couch', 'bed', 'bench', 'toilet', 'sink',
+  'refrigerator', 'oven', 'microwave', 'stop_sign', 'fire_hydrant', 'parking_meter',
+  'bus', 'car', 'truck', 'motorcycle', 'bicycle',
+]);
+
+const EVERYDAY_CLASSES: Set<string> = new Set([
+  'tv', 'laptop', 'cell_phone', 'clock', 'vase', 'bottle', 'cup', 'bowl',
+  'book', 'potted_plant', 'umbrella', 'backpack', 'handbag', 'suitcase',
+]);
+
+function classifyRelevance(label: string): RelevanceTier {
+  if (NAVIGATION_CLASSES.has(label)) return 'navigation';
+  if (EVERYDAY_CLASSES.has(label)) return 'everyday';
+  return 'low';
+}
+
+interface TrackedObject {
+  consecutiveSeen: number;
+  lastSeenTs: number;
+  lastSpokenTs: number;
+  count: number;
+  confirmedLabel: string | null;
+  pendingLabel: string | null;
+  pendingCount: number;
+  disappearedSpoken: boolean;
+  relevance: RelevanceTier;
+}
+
 export default class DetectionVoiceBridge {
   vm: VoiceManager;
   scoreThreshold: number;
   minFramesToConfirm: number;
   forgetMs: number;
   speakPriority: number;
-  tracked: Map<string, any>;
+  tracked: Map<string, TrackedObject>;
 
-  // option: pass vm (for testability) or use default singleton
   constructor(voiceManager?: VoiceManager, {
     scoreThreshold = 0.5,
-    minFramesToConfirm = 2,
-    forgetMs = 2000,
+    minFramesToConfirm = 3,
+    forgetMs = 3000,
     speakPriority = 0
   } = {}) {
     this.vm = (voiceManager || (vmSingleton as unknown as VoiceManager));
@@ -28,12 +65,6 @@ export default class DetectionVoiceBridge {
     this.tracked = new Map();
   }
 
-  /**
-   * Handle predictions.
-   * predictions: array from COCO-SSD: { class, score, bbox? }
-   * Optionally pass frameWidth and frameHeight so we can compute positions/distances:
-   * handlePredictions(predictions, frameWidth?, frameHeight?)
-   */
   handlePredictions(predictions: Prediction[] = [], frameWidth?: number, frameHeight?: number) {
     const now = Date.now();
     const seenLabels = new Set<string>();
@@ -42,41 +73,68 @@ export default class DetectionVoiceBridge {
       if (!p.class || p.score < this.scoreThreshold) continue;
       const label = p.class;
       seenLabels.add(label);
-      const recorded = this.tracked.get(label) || { consecutiveSeen: 0, lastSeenTs: 0, lastSpokenTs: 0, count: 0 };
+
+      let recorded = this.tracked.get(label);
+      if (!recorded) {
+        recorded = {
+          consecutiveSeen: 0,
+          lastSeenTs: 0,
+          lastSpokenTs: 0,
+          count: 0,
+          confirmedLabel: null,
+          pendingLabel: label,
+          pendingCount: 1,
+          disappearedSpoken: false,
+          relevance: classifyRelevance(label),
+        };
+      }
+
       recorded.consecutiveSeen += 1;
       recorded.lastSeenTs = now;
       recorded.count += 1;
-      this.tracked.set(label, recorded);
 
-      if (recorded.consecutiveSeen >= this.minFramesToConfirm) {
+      if (recorded.pendingLabel === label) {
+        recorded.pendingCount += 1;
+      } else {
+        recorded.pendingLabel = label;
+        recorded.pendingCount = 1;
+      }
+
+      if (recorded.pendingCount >= this.minFramesToConfirm && recorded.confirmedLabel !== label) {
+        recorded.confirmedLabel = label;
+      }
+
+      if (recorded.confirmedLabel === label && recorded.consecutiveSeen >= this.minFramesToConfirm) {
         const text = this._formatAppearance(label, p, frameWidth, frameHeight);
-        const priority = (label === 'person' || label === 'persona') ? this.speakPriority + 1 : this.speakPriority;
+        const priority = this.speakPriority + RELEVANCE_WEIGHTS[recorded.relevance];
         if ((now - recorded.lastSpokenTs) > 3000) {
           this._speakWithMoralCheck(text, priority, p.score);
           recorded.lastSpokenTs = now;
-          this.tracked.set(label, recorded);
         }
       }
+
+      this.tracked.set(label, recorded);
     }
 
     for (const [label, info] of Array.from(this.tracked.entries())) {
       if (!seenLabels.has(label)) {
         const age = now - (info.lastSeenTs || 0);
         if (age > this.forgetMs) {
-          if (!info.disappearedSpoken) {
+          if (!info.disappearedSpoken && info.confirmedLabel) {
             const text = this._formatDisappearance(label);
             this.vm.speak(text, this.speakPriority - 1, { interrupt: false });
             info.disappearedSpoken = true;
-            this.tracked.set(label, info);
           }
           if (age > this.forgetMs * 3) {
             this.tracked.delete(label);
           } else {
             info.consecutiveSeen = 0;
+            info.pendingCount = 0;
             this.tracked.set(label, info);
           }
         } else {
           info.consecutiveSeen = Math.max(0, info.consecutiveSeen - 1);
+          info.pendingCount = Math.max(0, info.pendingCount - 1);
           this.tracked.set(label, info);
         }
       } else {
@@ -101,6 +159,12 @@ export default class DetectionVoiceBridge {
     } else if (message) {
       console.warn(`[MoralNode] Descripción vetada: ${message}`);
     }
+  }
+
+  speakOcrText(text: string) {
+    if (!text || text.trim().length < 2) return;
+    const priority = this.speakPriority + RELEVANCE_WEIGHTS['navigation'];
+    this.vm.speak(`Texto detectado: ${text.trim()}`, priority, { interrupt: false });
   }
 
   _mapLabelToSpanish(label: string) {

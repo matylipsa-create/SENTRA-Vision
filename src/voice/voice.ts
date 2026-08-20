@@ -127,7 +127,7 @@ export default class VoiceManager {
       } catch (e) {
         console.warn('speech error', e);
       }
-      await new Promise(r => setTimeout(r, (opts.pauseAfterMs || 120)));
+      await new Promise(r => setTimeout(r, (opts.pauseAfterMs || 60)));
     }
     this.processing = false;
   }
