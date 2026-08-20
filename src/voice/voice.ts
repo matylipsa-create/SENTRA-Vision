@@ -46,8 +46,8 @@ export default class VoiceManager {
   }
 
   // -------------------- IndexedDB --------------------
-  _openDB() {
-    return new Promise((resolve) => {
+  _openDB(): Promise<IDBDatabase | null> {
+    return new Promise<IDBDatabase | null>((resolve) => {
       if (!('indexedDB' in window)) return resolve(null);
       const req = indexedDB.open('sentra_voice', 1);
       req.onupgradeneeded = () => {

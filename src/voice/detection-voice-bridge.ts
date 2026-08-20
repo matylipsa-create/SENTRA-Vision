@@ -1,6 +1,7 @@
 // src/voice/detection-voice-bridge.ts
 import VoiceManager from './voice';
 import vmSingleton from './manager';
+import { shouldSpeak, type MoralContext } from '../core/MoralNode';
 
 interface Prediction { class: string; score: number; bbox?: number[] }
 
@@ -51,7 +52,7 @@ export default class DetectionVoiceBridge {
         const text = this._formatAppearance(label, p, frameWidth, frameHeight);
         const priority = (label === 'person' || label === 'persona') ? this.speakPriority + 1 : this.speakPriority;
         if ((now - recorded.lastSpokenTs) > 1500) {
-          this.vm.speak(text, priority, { interrupt: false });
+          this._speakWithMoralCheck(text, priority, p.score);
           recorded.lastSpokenTs = now;
           this.tracked.set(label, recorded);
         }
@@ -84,6 +85,21 @@ export default class DetectionVoiceBridge {
           this.tracked.set(label, info);
         }
       }
+    }
+  }
+
+  private async _speakWithMoralCheck(text: string, priority: number, score: number) {
+    const ctx: MoralContext = {
+      source: 'vision-detection',
+      confidence: score,
+      operatorConsent: true,
+      demo: false,
+    };
+    const { allowed, message } = await shouldSpeak(text, ctx);
+    if (allowed) {
+      this.vm.speak(text, priority, { interrupt: false });
+    } else if (message) {
+      console.warn(`[MoralNode] Descripción vetada: ${message}`);
     }
   }
 

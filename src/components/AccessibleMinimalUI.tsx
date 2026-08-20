@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
-import { useRealModeSensors } from '../hooks/useRealModeSensors';
+import useRealModeSensors from '../hooks/useRealModeSensors';
 import vm from '../voice/manager';
 
 /**
