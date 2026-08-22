@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import DetectionVoiceBridge from '../voice/detection-voice-bridge';
+import type { VisionMode } from '../voice/detection-voice-bridge';
 import vm from '../voice/manager';
 
 const DETECTION_INTERVAL_MS = 1000;
@@ -27,6 +28,9 @@ export default function AccessibleMinimalUI(): JSX.Element {
   const [ocrReady, setOcrReady] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [lastOcrText, setLastOcrText] = useState<string | null>(null);
+  const [motionActive, setMotionActive] = useState(false);
+  const [visionMode, setVisionMode] = useState<VisionMode>('navigation');
+  const [currentCooldown, setCurrentCooldown] = useState(3000);
 
   const realMode = !!state.settings.realMode;
 
@@ -48,6 +52,7 @@ export default function AccessibleMinimalUI(): JSX.Element {
         ocrWorkerRef.current.terminate().catch(() => {});
         ocrWorkerRef.current = null;
       }
+      bridgeRef.current?.stopMotionTracking();
       vm.cancel();
     };
   }, []);
@@ -130,19 +135,19 @@ export default function AccessibleMinimalUI(): JSX.Element {
 
   const runDetection = useCallback(async () => {
     if (!realMode || !cameraReady) return;
-
     const model = modelRef.current;
     if (!model || !videoRef.current || !videoRef.current.videoWidth) return;
-
     try {
       const predictions = await model.detect(videoRef.current, 20, 0.5);
       const videoW = videoRef.current.videoWidth;
       const videoH = videoRef.current.videoHeight;
-
       setDetectedObjects(predictions);
-
       if (bridgeRef.current && predictions.length > 0) {
         bridgeRef.current.handlePredictions(predictions, videoW, videoH);
+      }
+      if (bridgeRef.current) {
+        setCurrentCooldown(bridgeRef.current.getCurrentCooldown());
+        setVisionMode(bridgeRef.current.visionMode);
       }
     } catch {
       // swallow per-frame errors
@@ -152,7 +157,6 @@ export default function AccessibleMinimalUI(): JSX.Element {
   const runOcr = useCallback(async () => {
     if (!realMode || !cameraReady || !ocrWorkerRef.current || ocrBusyRef.current) return;
     if (!videoRef.current || !videoRef.current.videoWidth) return;
-
     ocrBusyRef.current = true;
     try {
       const video = videoRef.current;
@@ -163,10 +167,8 @@ export default function AccessibleMinimalUI(): JSX.Element {
       const ctx2d = canvas.getContext('2d');
       if (!ctx2d) return;
       ctx2d.drawImage(video, 0, 0, canvas.width, canvas.height);
-
       const { data } = await ocrWorkerRef.current.recognize(canvas);
       const text = (data?.text || '').trim();
-
       if (text && text.length >= 3 && text !== lastOcrText) {
         setLastOcrText(text);
         bridgeRef.current?.speakOcrText(text);
@@ -180,29 +182,19 @@ export default function AccessibleMinimalUI(): JSX.Element {
 
   useEffect(() => {
     startStream();
-
     if (realMode) {
       loadModel().then(() => {
         setStatusMsg('Cámara activa. Describiendo el entorno.');
         vm.speak('Cámara activa. Comenzando a describir el entorno.', 2, { interrupt: true, rate: 1.15 });
       });
-
       loadOcrWorker();
-
       if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
       detectionTimerRef.current = setInterval(runDetection, DETECTION_INTERVAL_MS);
-
       if (ocrTimerRef.current) clearInterval(ocrTimerRef.current);
       ocrTimerRef.current = setInterval(runOcr, OCR_INTERVAL_MS);
     } else {
-      if (detectionTimerRef.current) {
-        clearInterval(detectionTimerRef.current);
-        detectionTimerRef.current = null;
-      }
-      if (ocrTimerRef.current) {
-        clearInterval(ocrTimerRef.current);
-        ocrTimerRef.current = null;
-      }
+      if (detectionTimerRef.current) { clearInterval(detectionTimerRef.current); detectionTimerRef.current = null; }
+      if (ocrTimerRef.current) { clearInterval(ocrTimerRef.current); ocrTimerRef.current = null; }
       setDetectedObjects([]);
       setLastOcrText(null);
       if (cameraReady) {
@@ -210,201 +202,133 @@ export default function AccessibleMinimalUI(): JSX.Element {
         vm.speak('Descripción detenida.', 2, { interrupt: true, rate: 1.15 });
       }
     }
-
     return () => {
-      if (detectionTimerRef.current) {
-        clearInterval(detectionTimerRef.current);
-        detectionTimerRef.current = null;
-      }
-      if (ocrTimerRef.current) {
-        clearInterval(ocrTimerRef.current);
-        ocrTimerRef.current = null;
-      }
+      if (detectionTimerRef.current) { clearInterval(detectionTimerRef.current); detectionTimerRef.current = null; }
+      if (ocrTimerRef.current) { clearInterval(ocrTimerRef.current); ocrTimerRef.current = null; }
     };
   }, [realMode, startStream, loadModel, loadOcrWorker, runDetection, runOcr, cameraReady, setDetectedObjects]);
 
   const toggle = () => {
     if (navigator.vibrate) navigator.vibrate(50);
-    updateSettings({ realMode: !realMode });
-
     if (!realMode) {
+      updateSettings({ realMode: true });
       setStatusMsg('Activando cámara y descripción...');
       vm.speak('Activando la descripción del entorno.', 2, { interrupt: true, rate: 1.15 });
+      setTimeout(() => {
+        if (bridgeRef.current) {
+          const ok = bridgeRef.current.startMotionTracking();
+          setMotionActive(ok);
+          if (ok) vm.speak('Seguimiento de movimiento activado.', 1, { rate: 1.15 });
+        }
+      }, 1500);
     } else {
+      updateSettings({ realMode: false });
       setStatusMsg('Desactivando descripción...');
       vm.speak('Desactivando la descripción del entorno.', 2, { interrupt: true, rate: 1.15 });
+      if (bridgeRef.current) {
+        bridgeRef.current.stopMotionTracking();
+        setMotionActive(false);
+      }
     }
-
     setTimeout(() => btnRef.current?.focus(), 200);
   };
 
-  useEffect(() => {
-    btnRef.current?.focus();
-  }, []);
+  useEffect(() => { btnRef.current?.focus(); }, []);
 
   const buttonLabel = realMode ? 'Desactivar descripción del entorno' : 'Activar descripción del entorno';
   const buttonState = realMode ? 'Desactivar' : 'Activar';
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!bridgeRef.current) return;
+    const t = e.touches[0];
+    bridgeRef.current.handleTouchStart(t.clientX, t.clientY);
+  };
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!bridgeRef.current) return;
+    const t = e.changedTouches[0];
+    bridgeRef.current.handleTouchEnd(t.clientX, t.clientY);
+  };
 
   return (
     <main
       role="main"
       aria-label="Sentra Vision — Asistente visual para personas ciegas"
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
       style={{
-        minHeight: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: '#000',
-        color: '#FFFFFF',
-        padding: '24px',
-        gap: 20,
+        minHeight: '100vh', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        background: '#000', color: '#FFFFFF', padding: '24px', gap: 20,
       }}
     >
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        aria-hidden="true"
-        style={{
-          position: 'absolute',
-          width: 1,
-          height: 1,
-          opacity: 0,
-          pointerEvents: 'none',
-          top: 0,
-          left: 0,
-        }}
+      <video ref={videoRef} autoPlay playsInline muted aria-hidden="true"
+        style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none', top: 0, left: 0 }}
       />
-
-      <div
-        style={{
-          width: '100%',
-          maxWidth: 520,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'stretch',
-          gap: 20,
-        }}
-      >
-        <div
-          aria-live="polite"
-          aria-atomic="true"
-          role="status"
-          style={{
-            textAlign: 'center',
-            fontSize: 18,
-            fontWeight: 600,
-            color: '#FDE047',
-            minHeight: 28,
-          }}
+      <div style={{ width: '100%', maxWidth: 520, display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 20 }}>
+        <div aria-live="polite" aria-atomic="true" role="status"
+          style={{ textAlign: 'center', fontSize: 18, fontWeight: 600, color: '#FDE047', minHeight: 28 }}
         >
           {errorMsg ? `Error: ${errorMsg}` : statusMsg}
         </div>
 
-        <button
-          ref={btnRef}
-          onClick={toggle}
-          aria-pressed={realMode}
-          aria-label={buttonLabel}
+        <button ref={btnRef} onClick={toggle} aria-pressed={realMode} aria-label={buttonLabel}
           style={{
-            all: 'unset',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: realMode ? '#DC2626' : '#FBBF24',
-            color: '#000',
-            borderRadius: 16,
-            height: 160,
-            width: '100%',
-            textAlign: 'center',
-            boxShadow: '0 6px 18px rgba(0,0,0,0.6)',
-            userSelect: 'none',
-            transition: 'background 0.2s ease',
+            all: 'unset', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: realMode ? '#DC2626' : '#FBBF24', color: '#000', borderRadius: 16, height: 160,
+            width: '100%', textAlign: 'center', boxShadow: '0 6px 18px rgba(0,0,0,0.6)',
+            userSelect: 'none', transition: 'background 0.2s ease',
           }}
         >
-          <span style={{ fontSize: 36, fontWeight: 800, lineHeight: 1 }}>
-            {buttonState}
-          </span>
+          <span style={{ fontSize: 36, fontWeight: 800, lineHeight: 1 }}>{buttonState}</span>
         </button>
 
-        <div
-          style={{
-            textAlign: 'center',
-            fontSize: 16,
-            color: '#E5E7EB',
-            opacity: 0.9,
-          }}
-          aria-hidden="true"
-        >
+        <div style={{ textAlign: 'center', fontSize: 16, color: '#E5E7EB', opacity: 0.9 }} aria-hidden="true">
           Presione el botón para {realMode ? 'detener la descripción' : 'comenzar a describir el entorno'}.
         </div>
 
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            gap: 12,
-            marginTop: 8,
-            flexWrap: 'wrap',
-          }}
-          aria-hidden="true"
-        >
-          <span style={{
-            fontSize: 13,
-            color: cameraReady ? '#22C55E' : '#6B7280',
-            fontWeight: 600,
-          }}>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 8, flexWrap: 'wrap' }} aria-hidden="true">
+          <span style={{ fontSize: 13, color: cameraReady ? '#22C55E' : '#6B7280', fontWeight: 600 }}>
             Cámara: {cameraReady ? 'Activa' : 'Inactiva'}
           </span>
-          <span style={{
-            fontSize: 13,
-            color: modelReady ? '#22C55E' : '#6B7280',
-            fontWeight: 600,
-          }}>
+          <span style={{ fontSize: 13, color: modelReady ? '#22C55E' : '#6B7280', fontWeight: 600 }}>
             IA: {modelReady ? 'Cargada' : 'Cargando...'}
           </span>
-          <span style={{
-            fontSize: 13,
-            color: ocrReady ? '#22C55E' : '#6B7280',
-            fontWeight: 600,
-          }}>
+          <span style={{ fontSize: 13, color: ocrReady ? '#22C55E' : '#6B7280', fontWeight: 600 }}>
             OCR: {ocrReady ? 'Listo' : 'Cargando...'}
           </span>
         </div>
 
+        {realMode && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }} aria-hidden="true">
+            <span style={{ fontSize: 13, color: motionActive ? '#22C55E' : '#6B7280', fontWeight: 600 }}>
+              Movimiento: {motionActive ? 'Activo' : 'Off'}
+            </span>
+            <span style={{ fontSize: 13, color: '#FBBF24', fontWeight: 600 }}>
+              Modo: {visionMode === 'navigation' ? 'Navegación' : 'Reconocimiento'}
+            </span>
+            <span style={{ fontSize: 13, color: '#93C5FD', fontWeight: 600 }}>
+              Ritmo: {(currentCooldown / 1000).toFixed(1)}s
+            </span>
+          </div>
+        )}
+
         {lastOcrText && (
-          <div
-            aria-live="polite"
-            style={{
-              textAlign: 'center',
-              fontSize: 14,
-              color: '#93C5FD',
-              minHeight: 20,
-              padding: '8px 12px',
-              background: 'rgba(30,58,138,0.3)',
-              borderRadius: 8,
-            }}
+          <div aria-live="polite"
+            style={{ textAlign: 'center', fontSize: 14, color: '#93C5FD', minHeight: 20, padding: '8px 12px', background: 'rgba(30,58,138,0.3)', borderRadius: 8 }}
             aria-label={`Último texto detectado: ${lastOcrText}`}
           >
             Texto: {lastOcrText}
           </div>
         )}
 
-        <div
-          id="a11y-announcer"
-          aria-live="assertive"
-          aria-atomic="true"
-          style={{
-            position: 'absolute',
-            left: '-10000px',
-            top: 'auto',
-            width: 1,
-            height: 1,
-            overflow: 'hidden',
-          }}
+        {realMode && (
+          <div style={{ textAlign: 'center', fontSize: 13, color: '#6B7280', padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: 8 }} aria-hidden="true">
+            Toque corto: repetir descripción · Doble toque: cambiar modo
+          </div>
+        )}
+
+        <div id="a11y-announcer" aria-live="assertive" aria-atomic="true"
+          style={{ position: 'absolute', left: '-10000px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}
         />
       </div>
     </main>
