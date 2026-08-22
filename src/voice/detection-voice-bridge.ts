@@ -2,6 +2,8 @@
 import VoiceManager from './voice';
 import vmSingleton from './manager';
 import { shouldSpeak, type MoralContext } from '../core/MoralNode';
+import { generateTCREIPrompt, type SentraEvent, type TCREIPrompt } from '../core/TCREIBridge';
+import { sendTCREIPrompt } from '../services/GeminiService';
 
 interface Prediction { class: string; score: number; bbox?: number[] }
 
@@ -52,6 +54,12 @@ interface TrackedObject {
 
 export type VisionMode = 'navigation' | 'recognition';
 
+export type TCREIInteractionRecorder = (
+  prompt: TCREIPrompt,
+  response: string,
+  event: SentraEvent,
+) => Promise<void>;
+
 interface MotionReading {
   ts: number;
   magnitude: number;
@@ -80,18 +88,30 @@ export default class DetectionVoiceBridge {
 
   private _visionMode: VisionMode = 'navigation';
   private _hapticsEnabled: boolean = true;
+  private _recordInteraction: TCREIInteractionRecorder | null;
 
-  constructor(voiceManager?: VoiceManager, {
-    scoreThreshold = 0.5,
-    minFramesToConfirm = 3,
-    forgetMs = 3000,
-    speakPriority = 0
-  } = {}) {
+  constructor(
+    voiceManager?: VoiceManager,
+    {
+      scoreThreshold = 0.5,
+      minFramesToConfirm = 3,
+      forgetMs = 3000,
+      speakPriority = 0,
+      recordInteraction,
+    }: {
+      scoreThreshold?: number;
+      minFramesToConfirm?: number;
+      forgetMs?: number;
+      speakPriority?: number;
+      recordInteraction?: TCREIInteractionRecorder;
+    } = {},
+  ) {
     this.vm = (voiceManager || (vmSingleton as unknown as VoiceManager));
     this.scoreThreshold = scoreThreshold;
     this.minFramesToConfirm = minFramesToConfirm;
     this.forgetMs = forgetMs;
     this.speakPriority = speakPriority;
+    this._recordInteraction = recordInteraction ?? null;
     this.tracked = new Map();
   }
 
@@ -328,7 +348,19 @@ export default class DetectionVoiceBridge {
     };
     const { allowed, message } = await shouldSpeak(text, ctx);
     if (allowed) {
-      this.vm.speak(text, priority, { interrupt: priority >= 5, rate: 1.15 });
+      const event: SentraEvent = {
+        tipo: 'obstáculo o peligro',
+        objeto: text,
+        confianza: score,
+        entorno: 'cámara del dispositivo',
+        estado_sistema: 'modo real activo',
+        timestamp: Date.now(),
+      };
+      const prompt = generateTCREIPrompt(event);
+      void sendTCREIPrompt(prompt).then(async (response) => {
+        if (this._recordInteraction) await this._recordInteraction(prompt, response, event);
+        this.vm.speak(response, priority, { interrupt: priority >= 5, rate: 1.15 });
+      });
     } else if (message) {
       console.warn(`[MoralNode] Descripción vetada: ${message}`);
     }

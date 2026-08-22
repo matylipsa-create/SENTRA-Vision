@@ -1,7 +1,10 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import DetectionVoiceBridge from '../voice/detection-voice-bridge';
-import type { VisionMode } from '../voice/detection-voice-bridge';
+import type { VisionMode, TCREIInteractionRecorder } from '../voice/detection-voice-bridge';
+import type { TCREIPrompt, SentraEvent } from '../core/TCREIBridge';
+import { tcreiPromptToText } from '../core/TCREIBridge';
+import { signAndChain } from '../lib/crypto';
 import vm from '../voice/manager';
 
 const DETECTION_INTERVAL_MS = 1000;
@@ -9,7 +12,7 @@ const OCR_INTERVAL_MS = 5000;
 const OCR_CANVAS_W = 640;
 
 export default function AccessibleMinimalUI(): JSX.Element {
-  const { state, updateSettings, setSensors, setTfjsStatus, setDetectedObjects } = useApp();
+  const { state, updateSettings, setSensors, setTfjsStatus, setDetectedObjects, addEvent } = useApp();
 
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -31,8 +34,43 @@ export default function AccessibleMinimalUI(): JSX.Element {
   const [motionActive, setMotionActive] = useState(false);
   const [visionMode, setVisionMode] = useState<VisionMode>('navigation');
   const [currentCooldown, setCurrentCooldown] = useState(3000);
+  const lastHashRef = useRef<string>('0'.repeat(64));
 
   const realMode = !!state.settings.realMode;
+
+  const recordTCREIInteraction = useCallback<TCREIInteractionRecorder>(
+    async (prompt: TCREIPrompt, response: string, event: SentraEvent) => {
+      try {
+        const baseEvent = {
+          id: `tcrei-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          type: 'TCREI_INTERACTION',
+          timestamp: Date.now(),
+          lat: 0,
+          lng: 0,
+          metadata: {
+            source: 'tcrei-bridge',
+            prompt: tcreiPromptToText(prompt),
+            response,
+            eventType: event.tipo,
+            confidence: event.confianza ?? null,
+          },
+          demo: !realMode,
+        };
+        const result = await signAndChain(baseEvent, lastHashRef.current);
+        lastHashRef.current = result.hash;
+        addEvent({
+          ...baseEvent,
+          hash: result.hash,
+          previousHash: result.previousHash,
+          signature: result.signature,
+          cryptoVerified: result.cryptoVerified,
+        });
+      } catch {
+        // best-effort — never block voice on chain failure
+      }
+    },
+    [addEvent, realMode],
+  );
 
   useEffect(() => {
     bridgeRef.current = new DetectionVoiceBridge(undefined, {
@@ -40,6 +78,7 @@ export default function AccessibleMinimalUI(): JSX.Element {
       minFramesToConfirm: 3,
       forgetMs: 3000,
       speakPriority: 0,
+      recordInteraction: recordTCREIInteraction,
     });
     return () => {
       if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
