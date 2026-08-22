@@ -1,5 +1,6 @@
-import { X, Webhook, Send, BatteryLow, Camera, Mic, MapPin, FlaskConical, Wifi } from 'lucide-react';
+import { X, Webhook, Send, BatteryLow, Camera, Mic, MapPin, FlaskConical, Wifi, Volume2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { useVoiceSettings } from '../hooks/useVoiceSettings';
 
 interface Props {
   open: boolean;
@@ -8,6 +9,7 @@ interface Props {
 
 export default function Settings({ open, onClose }: Props) {
   const { state, updateSettings, setMode, setDemoMode } = useApp();
+  const { voices, selectedVoiceURI, selectVoice, testVoice } = useVoiceSettings();
   if (!open) return null;
 
   const sensors = state.sensors;
@@ -160,6 +162,61 @@ export default function Settings({ open, onClose }: Props) {
               <span className="text-xs" style={{ color: '#FCD34D' }}>Modo Demo activo — los datos son simulados</span>
             </div>
           )}
+
+          {/* Voz */}
+          <div>
+            <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: '#6B7280' }}>Voz</div>
+            <div className="space-y-2">
+              <label className="text-xs flex items-center gap-1.5" style={{ color: '#9CA3AF' }}>
+                <Volume2 size={12} /> Voz del asistente
+              </label>
+              {voices.length === 0 ? (
+                <p className="text-[10px]" style={{ color: '#6B7280' }}>
+                  No hay voces disponibles en este navegador.
+                </p>
+              ) : (
+                <select
+                  value={selectedVoiceURI ?? ''}
+                  onChange={e => {
+                    const found = voices.find(v => v.voiceURI === e.target.value);
+                    if (found) selectVoice(found);
+                  }}
+                  className="w-full px-3 py-2 rounded-xl text-sm outline-none transition-all"
+                  style={{
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#E5E7EB',
+                  }}
+                >
+                  {!selectedVoiceURI && (
+                    <option value="" style={{ background: '#1A2A3A' }}>Voz por defecto del sistema</option>
+                  )}
+                  {voices.map(v => (
+                    <option key={v.voiceURI} value={v.voiceURI} style={{ background: '#1A2A3A' }}>
+                      {v.name} ({v.lang})
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={() => {
+                  const found = voices.find(v => v.voiceURI === selectedVoiceURI);
+                  testVoice(found ?? voices[0]);
+                }}
+                disabled={voices.length === 0}
+                className="w-full py-2.5 px-3 rounded-xl text-sm font-medium transition-all active:scale-95 flex items-center justify-center gap-2"
+                style={{
+                  background: voices.length === 0 ? 'rgba(255,255,255,0.03)' : 'rgba(251,191,36,0.1)',
+                  border: '1px solid rgba(251,191,36,0.3)',
+                  color: voices.length === 0 ? '#6B7280' : '#FBBF24',
+                  cursor: voices.length === 0 ? 'not-allowed' : 'pointer',
+                  opacity: voices.length === 0 ? 0.5 : 1,
+                }}
+              >
+                <Volume2 size={14} /> Probar voz
+              </button>
+            </div>
+          </div>
 
           {/* Ahorro de Energia */}
           <div>
