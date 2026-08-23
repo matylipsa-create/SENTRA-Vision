@@ -7,6 +7,11 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
+      external: [
+        '@tensorflow-models/coco-ssd',
+        '@tensorflow/tfjs',
+        'tesseract.js',
+      ],
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom'],
