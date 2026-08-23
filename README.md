@@ -1,8 +1,8 @@
-# Aegis IV — Seguridad Soberana
+# Sentra Visión — Seguridad Soberana
 
-> **Escudo y Espada** — Sistema táctico de seguridad soberana, offline-first, con veto humano.
+> **Escudo y Espada** — Sistema de asistencia visual cognitiva, offline-first, con veto humano.
 
-**Versión:** 3.1.1-PROT
+**Versión:** 3.1.2-PROT
 
 ## Demo
 
@@ -41,20 +41,19 @@ El módulo `EVOLIS` (`src/core/EVOLIS.ts`) orquesta los tres pilares. Cada event
 
 ## PWA
 
-- **Nombre**: Aegis 2
-- **Theme Color**: `#0A0C12`
-- **Background Color**: `#0A0C12`
-- **Ícono**: Escudo cyan con texto "Aegis 2" (192×192 y 512×512)
+- **Nombre**: Sentra Visión
+- **Short Name**: SentraV
+- **Theme Color**: `#0a0a0f`
+- **Background Color**: `#0a0a0f`
 - **Display**: Standalone
 
-Al instalar la PWA, el nombre "Aegis 2" aparece en la pantalla de inicio con el ícono del escudo.
+Al instalar la PWA, el nombre "Sentra Visión" aparece en la pantalla de inicio.
 
 ## Stack
 
 - React 18 + TypeScript + Vite
-- Supabase (auth, base de datos, edge functions)
-- Firebase (auth, notificaciones)
-- TensorFlow.js (detección de objetos)
+- TensorFlow.js (detección de objetos, carga diferida)
+- Tesseract.js (OCR, carga diferida)
 - Tailwind CSS
 
 ## Modos de operación
@@ -62,9 +61,8 @@ Al instalar la PWA, el nombre "Aegis 2" aparece en la pantalla de inicio con el 
 ### Modo Normal (operador de campo)
 - Vista simplificada, sin jerga técnica
 - Estado del sistema en lenguaje claro ("Sistema seguro", "Atención requerida", "Alerta crítica")
-- Botones de emergencia grandes y visibles (PÁNICO, 911, 107, 103)
 - Cámara en vivo cuando el modo Real está activo
-- Confirmación de llamada antes de marcar números de emergencia
+- Descripciones de entorno por voz con priorización de seguridad
 
 ### Modo Técnico (supervisor)
 - Métricas avanzadas: Confianza (%) y Carga Cognitiva (%)
@@ -88,12 +86,6 @@ Desde la página de Operaciones, el botón "Descargar JSON" genera un archivo co
 - Cada evento con: id, tipo, timestamp, lat/lng, hash, previousHash, firma Dilithium, cryptoVerified, metadata, demo
 - Indicador visual verde "Exportado" confirma que la descarga fue exitosa
 
-## Integración UE5
-
-Aegis envía eventos cognitivos a Unreal Engine 5 vía WebSocket (puerto 17771) a través del GameBridge. La documentación completa del formato de eventos y el listener en C++/Blueprints está en:
-
-- [docs/UE5_INTEGRATION_GUIDE.md](docs/UE5_INTEGRATION_GUIDE.md)
-
 ## Desarrollo
 
 ```bash
@@ -105,4 +97,4 @@ npm run typecheck # verificación de tipos
 
 ## Licencia
 
-Propietario — © Aegis 2
+Propietario — © Sentra Visión

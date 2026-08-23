@@ -1,8 +1,6 @@
 import { Camera, Wifi, Crosshair, Eye, ShieldCheck, TriangleAlert as AlertTriangle, Zap, Activity, Radio, Send, BatteryLow, Mic, KeyRound, ScanEye, Volume2, Brain } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import EmergencyCallButtons from '../components/EmergencyCallButtons';
 import CameraStream from '../components/CameraStream';
-import { usePanic } from '../hooks/usePanic';
 import type { CameraState, DetectedObject, AudioAlert } from '../types';
 
 const CAM_ICONS: Record<string, typeof Camera> = {
@@ -45,7 +43,6 @@ interface Props {
 
 export default function Dashboard({ isTechnical, onArm, setVideo }: Props) {
   const { state, setStatus } = useApp();
-  const { panicActive, triggerPanic } = usePanic();
   const AlertIcon = ALERT_CONFIG[state.alertLevel].icon;
   const alertCfg = ALERT_CONFIG[state.alertLevel];
   const isPowerSaving = state.settings.powerSavingMode;
@@ -114,36 +111,6 @@ export default function Dashboard({ isTechnical, onArm, setVideo }: Props) {
         style={{ background: 'rgba(251,191,36,0.08)', color: '#FBBF24' }}>
         {state.status === 'ARMADO' ? 'DESARMAR SISTEMA' : 'ARMAR SISTEMA'}
       </button>
-
-      <button
-        onClick={triggerPanic}
-        className="w-full rounded-2xl py-5 font-bold text-base active:scale-95 transition-all relative overflow-hidden"
-        style={{
-          background: panicActive ? '#EF4444' : 'rgba(239,68,68,0.12)',
-          color: panicActive ? '#fff' : '#EF4444',
-          border: `2px solid ${panicActive ? '#EF4444' : 'rgba(239,68,68,0.4)'}`,
-          boxShadow: panicActive ? '0 0 30px rgba(239,68,68,0.6)' : 'none',
-        }}>
-        {panicActive ? (
-          <span className="flex items-center justify-center gap-2 animate-pulse">
-            <Zap size={20} />
-            PANICO ACTIVADO
-          </span>
-        ) : (
-          <span className="flex items-center justify-center gap-2">
-            <Zap size={20} />
-            ACTIVAR PANICO
-          </span>
-        )}
-      </button>
-
-      <div className="grid grid-cols-2 gap-2">
-        <EmergencyCallButtons variant="911" />
-        <EmergencyCallButtons variant="107" />
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <EmergencyCallButtons variant="103" />
-      </div>
 
       <CameraStream setVideo={setVideo} />
 
@@ -272,7 +239,7 @@ export default function Dashboard({ isTechnical, onArm, setVideo }: Props) {
               <div key={e.id} className="flex items-center justify-between py-1.5 px-3 rounded-lg animate-fade-in"
                 style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
                 <div className="flex items-center gap-2">
-                  <Radio size={12} style={{ color: e.type.includes('BREACH') || e.type.includes('OFFLINE') || e.type.includes('PANIC') ? '#EF4444' : '#FBBF24' }} />
+                  <Radio size={12} style={{ color: e.type.includes('BREACH') || e.type.includes('OFFLINE') ? '#EF4444' : '#FBBF24' }} />
                   <span className="text-xs font-mono" style={{ color: '#9CA3AF' }}>{e.type}</span>
                   {e.cryptoVerified && (
                     <KeyRound size={10} style={{ color: '#22C55E' }} />

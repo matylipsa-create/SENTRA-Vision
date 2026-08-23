@@ -1,17 +1,17 @@
 {
-  "name": "Aegis 2",
-  "short_name": "Aegis 2",
-  "description": "Seguridad Soberana — Escudo y Espada",
+  "name": "Sentra Visión",
+  "short_name": "SentraV",
+  "description": "Asistencia visual cognitiva — Escudo y Espada",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0A0C12",
-  "theme_color": "#0A0C12",
+  "background_color": "#0a0a0f",
+  "theme_color": "#00d4ff",
   "orientation": "portrait",
   "lang": "es",
   "dir": "ltr",
   "prefer_related_applications": false,
-  "categories": ["utilities", "productivity"],
+  "categories": ["utilities", "productivity", "accessibility"],
   "icons": [
     {
       "src": "/icon-192.png",

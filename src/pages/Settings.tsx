@@ -235,8 +235,8 @@ export default function Settings({ open, onClose }: Props) {
                 </div>
                 <span className="text-[10px] mt-1" style={{ color: '#6B7280' }}>
                   {state.settings.powerSavingMode
-                    ? 'Solo GPS + panico. Sin animaciones. Actualizacion reducida.'
-                    : 'Desactiva animaciones, reduce frecuencia y limita modulos a GPS + panico.'}
+                    ? 'Solo GPS. Sin animaciones. Actualizacion reducida.'
+                    : 'Desactiva animaciones, reduce frecuencia y limita modulos a GPS.'}
                 </span>
               </div>
               <div className="w-10 h-6 rounded-full transition-all relative flex-shrink-0" style={{
