@@ -1,32 +1,29 @@
 {
-  "name": "aegis-iv",
+  "name": "sentra-core",
   "private": true,
-  "version": "3.0.0-PROT",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "preview": "vite preview",
-    "state": "node scripts/generate-state.js"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tensorflow-models/coco-ssd": "^2.2.3",
-    "@tensorflow/tfjs": "^4.22.0",
-    "lucide-react": "^0.460.0",
+    "@electric-sql/pglite": "^0.2.17",
+    "lucide-react": "^0.439.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tesseract.js": "^4.1.1",
-    "@vladmandic/face-api": "^1.4.0"
+    "react-router-dom": "^6.26.2"
   },
   "devDependencies": {
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.6.3",
-    "vite": "^6.0.5"
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.11",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.6"
   }
 }
