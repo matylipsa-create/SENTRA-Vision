@@ -1,5 +1,5 @@
-// Aegis 2 Service Worker — Network-First with auto-purge
-const CACHE_VERSION = 'aegis-v2';
+// Sentra Visión Service Worker — Network-First with auto-purge
+const CACHE_VERSION = 'sentra-vision-v3';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 const MAX_RUNTIME_ENTRIES = 60;
@@ -45,7 +45,8 @@ self.addEventListener('fetch', (event) => {
     url.hostname.includes('pipedream') ||
     url.hostname.includes('telegram') ||
     url.hostname.includes('nominatim') ||
-    url.hostname.includes('tensorflow');
+    url.hostname.includes('tensorflow') ||
+    url.hostname.includes('jsdelivr');
 
   if (isExternal) return; // Let them pass through without caching
 
