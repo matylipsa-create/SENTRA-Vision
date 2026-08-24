@@ -102,10 +102,44 @@
   box-shadow: 0 0 20px rgba(255, 68, 68, 0.2);
 }
 
+.status-dot[data-status="CONECTANDO"] {
+  background: #fbbf24;
+  box-shadow: 0 0 20px rgba(251, 191, 36, 0.4);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .detection-text {
   margin-top: 8px;
   color: #00d4ff;
   font-size: 1.2rem;
+}
+
+.labels-text {
+  margin-top: 4px;
+  color: #6b8ad4;
+  font-size: 1rem;
+  max-width: 320px;
+  text-align: center;
+}
+
+.loading-text {
+  margin-top: 8px;
+  color: #fbbf24;
+  font-size: 1rem;
+}
+
+.status-msg {
+  margin-top: 1rem;
+  text-align: center;
+  font-size: 1.1rem;
+  color: #a0a0b0;
+  max-width: 340px;
+  min-height: 24px;
 }
 
 .error-text {
