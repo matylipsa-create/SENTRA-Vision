@@ -1,0 +1,163 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+.app-container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #0a0a0f;
+  color: #ffffff;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.app-title {
+  font-size: 2.5rem;
+  font-weight: 300;
+  color: #00d4ff;
+  margin-bottom: 3rem;
+  text-align: center;
+  text-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
+}
+
+.main-button {
+  width: 280px;
+  height: 280px;
+  border-radius: 50%;
+  border: none;
+  font-size: 3rem;
+  font-weight: 700;
+  letter-spacing: 4px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  outline: 4px solid transparent;
+  text-transform: uppercase;
+  touch-action: manipulation;
+}
+
+.main-button.inactive {
+  background: #1a1a2e;
+  color: #fff;
+  border: 3px solid #00d4ff;
+}
+
+.main-button.inactive:hover,
+.main-button.inactive:focus-visible {
+  background: #2a2a4e;
+  transform: scale(1.05);
+  outline: 4px solid #00d4ff;
+}
+
+.main-button.active {
+  background: #00d4ff;
+  color: #0a0a0f;
+  border: 3px solid #00d4ff;
+  animation: pulse-active 2s ease-in-out infinite;
+}
+
+.main-button.active:hover,
+.main-button.active:focus-visible {
+  background: #00e5ff;
+  transform: scale(1.05);
+  outline: 4px solid #fff;
+}
+
+@keyframes pulse-active {
+  0%, 100% { box-shadow: 0 0 30px rgba(0, 212, 255, 0.3); }
+  50% { box-shadow: 0 0 60px rgba(0, 212, 255, 0.6); }
+}
+
+.status-container {
+  margin-top: 3rem;
+  text-align: center;
+  font-size: 1.5rem;
+  min-height: 80px;
+}
+
+.status-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #a0a0b0;
+}
+
+.status-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: inline-block;
+  transition: 0.3s;
+}
+
+.status-dot[data-status="ACTIVA"] {
+  background: #00ff88;
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.4);
+}
+
+.status-dot[data-status="INACTIVA"] {
+  background: #ff4444;
+  box-shadow: 0 0 20px rgba(255, 68, 68, 0.2);
+}
+
+.detection-text {
+  margin-top: 8px;
+  color: #00d4ff;
+  font-size: 1.2rem;
+}
+
+.error-text {
+  margin-top: 8px;
+  color: #ff6b6b;
+}
+
+.gesture-hint {
+  margin-top: 1rem;
+  color: #4a4a5a;
+  font-size: 0.9rem;
+  opacity: 0.5;
+}
+
+.version-text {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #4a4a5a;
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+}
+
+.hidden-video {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 600px) {
+  .app-title { font-size: 1.8rem; margin-bottom: 2rem; }
+  .main-button { width: 200px; height: 200px; font-size: 2rem; }
+  .status-container { font-size: 1.2rem; }
+}
+
+@media (prefers-contrast: high) {
+  .main-button.inactive {
+    background: #000;
+    border: 4px solid #fff;
+  }
+  .main-button.active {
+    background: #fff;
+    color: #000;
+    border: 4px solid #fff;
+  }
+  .app-title {
+    color: #fff;
+    text-shadow: none;
+  }
+}

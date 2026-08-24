@@ -1,121 +1,101 @@
-import { useEffect, useState, useCallback } from 'react';
-import { AppProvider, useApp } from './context/AppContext';
-import { ToastProvider } from './context/ToastContext';
-import TopBar from './components/TopBar';
-import BottomNav from './components/BottomNav';
-import Landing from './components/Landing';
-import OnboardingGuide from './components/OnboardingGuide';
-import DemoModeBanner from './components/DemoModeBanner';
-import Dashboard from './pages/Dashboard';
-import Regulation from './pages/Regulation';
-import Operations from './pages/Operations';
-import Settings from './pages/Settings';
-import AegisMetricsPanel from './components/AegisMetricsPanel';
-import useRealModeSensors from './hooks/useRealModeSensors';
-import { useDemoEventGenerator } from './hooks/useDemoEventGenerator';
-import { useMetricsUpdater } from './hooks/useMetricsUpdater';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import './App.css';
 
-const ONBOARDING_KEY = 'aegis-onboarded';
+function App() {
+  const [isActive, setIsActive] = useState(false);
+  const [detectionCount, setDetectionCount] = useState(0);
+  const [cameraStatus, setCameraStatus] = useState('INACTIVA');
+  const [error, setError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const lastTapRef = useRef<number>(0);
 
-function MainApp() {
-  const { state, setMode, setDemoMode } = useApp();
-  const [activePage, setActivePage] = useState('dashboard');
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [metricsOpen, setMetricsOpen] = useState(false);
-  const [demoBannerVisible, setDemoBannerVisible] = useState(false);
+  const speak = useCallback((text: string) => {
+    if ('speechSynthesis' in window) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    }
+  }, []);
 
-  const { setVideo } = useRealModeSensors();
-  useDemoEventGenerator();
-  useMetricsUpdater();
+  const handleToggle = useCallback(async () => {
+    if (navigator.vibrate) navigator.vibrate(50);
+    const newState = !isActive;
+    setIsActive(newState);
+
+    if (newState) {
+      speak('Activando visión');
+      setCameraStatus('ACTIVA');
+      setError(null);
+      if (videoRef.current) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' }
+          });
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+          speak('Cámara activada');
+          setDetectionCount(0);
+        } catch {
+          speak('Error al activar cámara');
+          setError('No se pudo acceder a la cámara');
+          setIsActive(false);
+          setCameraStatus('INACTIVA');
+        }
+      }
+    } else {
+      speak('Desactivando visión');
+      setCameraStatus('INACTIVA');
+      setDetectionCount(0);
+      if (videoRef.current && videoRef.current.srcObject) {
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+        videoRef.current.srcObject = null;
+      }
+    }
+  }, [isActive, speak]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('demo') === 'true') {
-      setDemoMode(true);
-      setDemoBannerVisible(true);
-    }
-    if (params.get('debug') === 'true') {
-      console.debug('[AEGIS] Debug mode active');
-    }
-  }, [setDemoMode]);
-
-  const handleToggleMode = useCallback(() => {
-    setMode(state.mode === 'normal' ? 'technical' : 'normal');
-  }, [state.mode, setMode]);
-
-  const isTechnical = state.mode === 'technical';
-  const showBanner = demoBannerVisible && state.demoMode;
-  const topPadding = 52 + (showBanner ? 36 : 0) + 16;
+    const handleDoubleTap = (e: TouchEvent) => {
+      const now = Date.now();
+      if (now - lastTapRef.current < 300 && lastTapRef.current > 0) {
+        e.preventDefault();
+        handleToggle();
+        lastTapRef.current = 0;
+      } else {
+        lastTapRef.current = now;
+      }
+    };
+    const container = containerRef.current;
+    if (container) container.addEventListener('touchstart', handleDoubleTap, { passive: false });
+    return () => { if (container) container.removeEventListener('touchstart', handleDoubleTap); };
+  }, [handleToggle]);
 
   return (
-    <div className={state.settings.powerSavingMode ? 'power-saving-mode' : ''} style={{ minHeight: '100dvh' }}>
-      <TopBar
-        onToggleMode={handleToggleMode}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenMetrics={() => setMetricsOpen(true)}
-      />
-      {showBanner && <DemoModeBanner onHide={() => setDemoBannerVisible(false)} />}
-      <main
-        style={{
-          paddingTop: topPadding,
-          paddingBottom: 80,
-          paddingLeft: 16,
-          paddingRight: 16,
-          maxWidth: 480,
-          margin: '0 auto',
-          width: '100%',
-          minHeight: '100dvh',
-        }}
+    <div ref={containerRef} className="app-container" role="application" aria-label="Sentra Visión">
+      <h1 className="app-title" role="heading" aria-level={1} aria-label="Sentra Visión">Sentra Visión</h1>
+      <button
+        className={`main-button ${isActive ? 'active' : 'inactive'}`}
+        onClick={handleToggle}
+        aria-label={isActive ? 'Desactivar visión' : 'Activar visión'}
+        aria-pressed={isActive}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleToggle(); } }}
       >
-        {activePage === 'dashboard' && (
-          <Dashboard isTechnical={isTechnical} onArm={() => {}} setVideo={setVideo} />
-        )}
-        {activePage === 'regulation' && <Regulation />}
-        {activePage === 'operations' && <Operations />}
-      </main>
-      <BottomNav
-        active={activePage}
-        onNavigate={setActivePage}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
-      <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <AegisMetricsPanel open={metricsOpen} onClose={() => setMetricsOpen(false)} />
+        {isActive ? 'DESACTIVAR' : 'ACTIVAR'}
+      </button>
+      <div className="status-container" role="status" aria-live="polite" aria-atomic="true">
+        <p className="status-text"><span className="status-dot" data-status={cameraStatus} /> Cámara: {cameraStatus}</p>
+        {isActive && <p className="detection-text">Objetos detectados: {detectionCount}</p>}
+        {error && <p className="error-text" role="alert">Error: {error}</p>}
+      </div>
+      <p className="gesture-hint" aria-hidden="true">Doble toque en pantalla para activar/desactivar</p>
+      <p className="version-text">v3.1.2-PROT · Soberanía del dato</p>
+      <video ref={videoRef} className="hidden-video" aria-hidden="true" playsInline />
     </div>
   );
 }
 
-export default function App() {
-  const [enteredApp, setEnteredApp] = useState(false);
-  const [onboarded, setOnboarded] = useState(() => {
-    try {
-      return localStorage.getItem(ONBOARDING_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
-
-  const handleEnterApp = useCallback(() => setEnteredApp(true), []);
-
-  const handleOnboardingComplete = useCallback(() => {
-    try {
-      localStorage.setItem(ONBOARDING_KEY, 'true');
-    } catch {
-      /* noop */
-    }
-    setOnboarded(true);
-  }, []);
-
-  return (
-    <AppProvider>
-      <ToastProvider>
-        {!enteredApp ? (
-          <Landing onEnterApp={handleEnterApp} />
-        ) : !onboarded ? (
-          <OnboardingGuide onComplete={handleOnboardingComplete} />
-        ) : (
-          <MainApp />
-        )}
-      </ToastProvider>
-    </AppProvider>
-  );
-}
+export default App;
