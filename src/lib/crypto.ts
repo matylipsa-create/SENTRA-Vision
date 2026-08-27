@@ -1,127 +1,106 @@
+// src/lib/crypto.ts
+// Utilidades criptográficas simples (compatible con offline-first)
+// Para producción, usar crypto.subtle (SubtleCrypto)
+
 /**
- * Crypto module — Dilithium signature simulator + SHA-256 hash chain.
- *
- * Dilithium (post-quantum signature scheme) is not yet available in browsers.
- * This module uses ECDSA P-256 via Web Crypto as a functional stand-in,
- * producing real cryptographic signatures that can be verified.
- * The API mirrors what a true Dilithium integration would expose.
+ * Hash SHA-256 simple usando SubtleCrypto (si está disponible).
+ * Fallback: hash simple compatible con offline.
  */
-
-const GENESIS_HASH = '0'.repeat(64);
-
-let keyPair: CryptoKeyPair | null = null;
-
-export function getGenesisHash(): string {
-  return GENESIS_HASH;
-}
-
 export async function sha256(data: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const buffer = await crypto.subtle.digest('SHA-256', encoder.encode(data));
-  return bufferToHex(buffer);
-}
-
-function bufferToHex(buffer: ArrayBuffer): string {
-  return Array.from(new Uint8Array(buffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
+  // Intentar usar crypto.subtle (disponible en HTTPS/localhost)
+  if ('crypto' in globalThis && globalThis.crypto.subtle) {
+    try {
+      const encoder = new TextEncoder();
+      const buffer = await crypto.subtle.digest('SHA-256', encoder.encode(data));
+      const hashArray = Array.from(new Uint8Array(buffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      return hashHex;
+    } catch (error) {
+      console.warn('[crypto] Error en SHA-256, usando fallback:', error);
+    }
   }
-  return bytes;
+
+  // Fallback: hash simple
+  return simpleHash(data);
 }
 
-export async function initDilithium(): Promise<void> {
-  if (keyPair) return;
-  try {
-    keyPair = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      true,
-      ['sign', 'verify'],
-    );
-  } catch {
-    keyPair = null;
+/**
+ * Hash simple (fallback para offline).
+ * No es criptográficamente seguro, solo para compatibilidad.
+ */
+export function simpleHash(data: string): string {
+  let hash = 0;
+  for (let i = 0; i < data.length; i++) {
+    const char = data.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convertir a 32-bit integer
   }
+  return `0x${Math.abs(hash).toString(16).padStart(16, '0')}`;
 }
 
-export async function dilithiumSign(data: string): Promise<string> {
-  if (!keyPair) await initDilithium();
-  if (!keyPair) return '0'.repeat(64);
-  const encoder = new TextEncoder();
-  const signature = await crypto.subtle.sign(
-    { name: 'ECDSA', hash: 'SHA-256' },
-    keyPair.privateKey,
-    encoder.encode(data),
-  );
-  return bufferToHex(signature);
-}
+/**
+ * Valida que una cadena de hashes sea válida (verificación de integridad).
+ */
+export function verifyHashChain(
+  chain: Array<{ hash: string; previousHash: string }>,
+  expectedFirstHash: string = 'GENESIS_BLOCK'
+): boolean {
+  if (chain.length === 0) return true;
 
-export async function dilithiumVerify(data: string, signatureHex: string): Promise<boolean> {
-  if (!keyPair) return false;
-  try {
-    const encoder = new TextEncoder();
-    const sigBytes = hexToBytes(signatureHex);
-    return await crypto.subtle.verify(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      keyPair.publicKey,
-      sigBytes as BufferSource,
-      encoder.encode(data),
-    );
-  } catch {
-    return false;
+  for (let i = 0; i < chain.length; i++) {
+    const current = chain[i];
+    const previous = i === 0 ? expectedFirstHash : chain[i - 1].hash;
+
+    if (current.previousHash !== previous) {
+      console.error(`[crypto] Cadena rota en índice ${i}`);
+      return false;
+    }
   }
+
+  return true;
 }
 
-export async function chainHash(previousHash: string, eventData: string): Promise<string> {
-  return await sha256(previousHash + eventData);
-}
-
-export function buildEventString(event: {
-  id: string;
-  type: string;
-  timestamp: number;
-  lat: number;
-  lng: number;
-  metadata: Record<string, unknown>;
-  demo: boolean;
-}): string {
-  return JSON.stringify({
-    id: event.id,
-    type: event.type,
-    timestamp: event.timestamp,
-    lat: event.lat,
-    lng: event.lng,
-    metadata: event.metadata,
-    demo: event.demo,
+/**
+ * Genera un UUID v4 simple (no es criptográficamente seguro).
+ */
+export function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
   });
 }
 
-export interface CryptoResult {
-  hash: string;
-  previousHash: string;
-  signature: string;
-  cryptoVerified: boolean;
+/**
+ * Codifica un objeto a base64.
+ */
+export function encodeBase64(data: string): string {
+  try {
+    return btoa(unescape(encodeURIComponent(data)));
+  } catch (error) {
+    console.error('[crypto] Error codificando base64:', error);
+    return '';
+  }
 }
 
-export async function signAndChain(
-  event: {
-    id: string;
-    type: string;
-    timestamp: number;
-    lat: number;
-    lng: number;
-    metadata: Record<string, unknown>;
-    demo: boolean;
-  },
-  previousHash: string,
-): Promise<CryptoResult> {
-  const eventString = buildEventString(event);
-  const hash = await chainHash(previousHash, eventString);
-  const signature = await dilithiumSign(hash);
-  const cryptoVerified = await dilithiumVerify(hash, signature);
-  return { hash, previousHash, signature, cryptoVerified };
+/**
+ * Decodifica una cadena en base64.
+ */
+export function decodeBase64(data: string): string {
+  try {
+    return decodeURIComponent(escape(atob(data)));
+  } catch (error) {
+    console.error('[crypto] Error decodificando base64:', error);
+    return '';
+  }
+}
+
+/**
+ * Computa un hash de integridad simple para detecciones.
+ */
+export function computeDetectionHash(
+  objects: Array<{ class: string; score: number }>
+): string {
+  const payload = JSON.stringify(objects.sort((a, b) => a.class.localeCompare(b.class)));
+  return simpleHash(payload);
 }
