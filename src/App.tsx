@@ -1,59 +1,123 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+// src/App.tsx
+// Sentra Visión — UI accesible con MoralNode + EVOLIS integrados
+
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useRealModeSensors } from './hooks/useRealModeSensors';
 import './App.css';
-import { useObjectDetection } from './hooks/useObjectDetection';
 
+// Mapeo de etiquetas en español
 const LABEL_ES: Record<string, string> = {
-  person: 'persona', dog: 'perro', cat: 'gato', car: 'auto', bicycle: 'bicicleta',
-  bottle: 'botella', chair: 'silla', couch: 'sofá', tv: 'televisor', laptop: 'computadora',
-  motorcycle: 'moto', bus: 'colectivo', truck: 'camión', backpack: 'mochila',
-  handbag: 'bolso', suitcase: 'valija', 'cell_phone': 'celular', cup: 'taza',
-  fork: 'tenedor', knife: 'cuchillo', spoon: 'cuchara', bowl: 'cuenco',
-  clock: 'reloj', vase: 'jarrón', scissors: 'tijeras', toilet: 'inodoro',
-  sink: 'pileta', mouse: 'mouse', keyboard: 'teclado', remote: 'control remoto',
-  microwave: 'microondas', oven: 'horno', refrigerator: 'heladera',
-  book: 'libro', 'potted_plant': 'planta', 'dining_table': 'mesa', bed: 'cama',
-  'stop_sign': 'cartel de pare', 'fire_hydrant': 'boca de incendio',
-  'parking_meter': 'parquímetro', bench: 'banco', umbrella: 'paraguas',
-  'traffic_light': 'semáforo',
+  person: 'persona',
+  dog: 'perro',
+  cat: 'gato',
+  car: 'auto',
+  bicycle: 'bicicleta',
+  motorcycle: 'moto',
+  bus: 'autobús',
+  truck: 'camión',
+  chair: 'silla',
+  table: 'mesa',
+  bottle: 'botella',
+  phone: 'teléfono',
+  book: 'libro',
+  tv: 'televisor',
+  computer: 'computadora',
+  knife: 'cuchillo',
+  gun: 'arma',
+  weapon: 'arma',
+  scissors: 'tijeras'
 };
-
-function labelToEs(label: string): string {
-  return LABEL_ES[label] || label;
-}
 
 function App() {
   const [isActive, setIsActive] = useState(false);
+  const [detectionCount, setDetectionCount] = useState(0);
+  const [detectedLabels, setDetectedLabels] = useState<string[]>([]);
   const [cameraStatus, setCameraStatus] = useState('INACTIVA');
   const [error, setError] = useState<string | null>(null);
-  const [statusMsg, setStatusMsg] = useState('Sentra Visión listo. Toque el botón para activar.');
+  const [ethicalFilterActive, setEthicalFilterActive] = useState(true);
+  const [chainVerified, setChainVerified] = useState(true);
+  const [vetoRequired, setVetoRequired] = useState(false);
+  const [lastVetoDecision, setLastVetoDecision] = useState<string | null>(null);
+  const [eventCount, setEventCount] = useState(0);
+  const [showDebug, setShowDebug] = useState(false);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastTapRef = useRef<number>(0);
-  const lastSpokenCountRef = useRef<number>(0);
-  const lastSpokenTsRef = useRef<number>(0);
 
-  const { count, labels, modelReady, modelError } = useObjectDetection(videoRef, isActive);
-
+  // Función de voz
   const speak = useCallback((text: string) => {
     if ('speechSynthesis' in window) {
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.1;
+      utterance.rate = 1;
       utterance.pitch = 1;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
     }
   }, []);
 
+  // Hook de detección con ética y trazabilidad
+  const {
+    detections,
+    filteredDetections,
+    isModelLoading,
+    error: detectionError,
+    ethicalFilterActive: ethicsActive,
+    isVetoRequired,
+    lastVetoDecision: vetoDecision,
+    chainVerified: chainOk,
+    getChainStats,
+    getMoralLog,
+    evolis
+  } = useRealModeSensors({
+    videoRef,
+    enabled: isActive,
+    enableEthics: true,
+    enableTracing: true,
+    enableContext: true,
+    onDetection: (objects) => {
+      const labels = objects.map(o => LABEL_ES[o.class] || o.class);
+      setDetectedLabels(labels);
+      setDetectionCount(objects.length);
+      
+      if (objects.length > 0 && objects.length % 3 === 0) {
+        const topObjects = labels.slice(0, 3).join(', ');
+        speak(`Detectados: ${topObjects}`);
+      }
+    },
+    onEthicalFilter: (objects, allowed) => {
+      if (!allowed) {
+        speak('⚠️ Filtro ético activado');
+      }
+    }
+  });
+
+  // Actualizar estado de ética y trazabilidad
+  useEffect(() => {
+    setEthicalFilterActive(ethicsActive);
+    setChainVerified(chainOk);
+    setVetoRequired(isVetoRequired);
+    setLastVetoDecision(vetoDecision);
+    
+    // Actualizar contador de eventos
+    if (evolis) {
+      const stats = evolis.getStats();
+      setEventCount(stats.totalEvents);
+    }
+  }, [ethicsActive, chainOk, isVetoRequired, vetoDecision, evolis]);
+
+  // Manejar activación/desactivación
   const handleToggle = useCallback(async () => {
     if (navigator.vibrate) navigator.vibrate(50);
+    
     const newState = !isActive;
     setIsActive(newState);
 
     if (newState) {
       speak('Activando visión');
-      setCameraStatus('CONECTANDO');
+      setCameraStatus('ACTIVA');
       setError(null);
-      setStatusMsg('Activando cámara...');
+      
       if (videoRef.current) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
@@ -61,13 +125,10 @@ function App() {
           });
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
-          setCameraStatus('ACTIVA');
-          setStatusMsg('Cámara activa. Analizando entorno.');
-          speak('Cámara activada. Comenzando a analizar el entorno.');
-        } catch {
+          speak('Cámara activada');
+        } catch (err) {
           speak('Error al activar cámara');
           setError('No se pudo acceder a la cámara');
-          setStatusMsg('Error: no se pudo acceder a la cámara');
           setIsActive(false);
           setCameraStatus('INACTIVA');
         }
@@ -75,7 +136,9 @@ function App() {
     } else {
       speak('Desactivando visión');
       setCameraStatus('INACTIVA');
-      setStatusMsg('Visión desactivada. Toque el botón para reactivar.');
+      setDetectionCount(0);
+      setDetectedLabels([]);
+      
       if (videoRef.current && videoRef.current.srcObject) {
         (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
         videoRef.current.srcObject = null;
@@ -83,6 +146,7 @@ function App() {
     }
   }, [isActive, speak]);
 
+  // Doble toque en pantalla
   useEffect(() => {
     const handleDoubleTap = (e: TouchEvent) => {
       const now = Date.now();
@@ -94,46 +158,25 @@ function App() {
         lastTapRef.current = now;
       }
     };
+    
     const container = containerRef.current;
-    if (container) container.addEventListener('touchstart', handleDoubleTap, { passive: false });
-    return () => { if (container) container.removeEventListener('touchstart', handleDoubleTap); };
+    if (container) {
+      container.addEventListener('touchstart', handleDoubleTap, { passive: false });
+    }
+    
+    return () => {
+      if (container) {
+        container.removeEventListener('touchstart', handleDoubleTap);
+      }
+    };
   }, [handleToggle]);
-
-  useEffect(() => {
-    if (!isActive || !modelReady || count === 0) return;
-    const now = Date.now();
-    if (now - lastSpokenTsRef.current < 3000) return;
-    if (count === lastSpokenCountRef.current) return;
-
-    lastSpokenTsRef.current = now;
-    lastSpokenCountRef.current = count;
-
-    const uniqueLabels = [...new Set(labels)];
-    const esLabels = uniqueLabels.slice(0, 5).map(labelToEs);
-    const text = count === 1
-      ? `Se detectó ${esLabels[0]}`
-      : `Se detectaron ${count} objetos: ${esLabels.join(', ')}`;
-
-    speak(text);
-    if (navigator.vibrate) navigator.vibrate(30);
-  }, [count, labels, isActive, modelReady, speak]);
-
-  useEffect(() => {
-    if (isActive && modelError) {
-      setStatusMsg('No se pudo cargar el modelo de detección');
-      speak('No se pudo cargar el modelo de detección de objetos');
-    }
-  }, [modelError, isActive, speak]);
-
-  useEffect(() => {
-    if (isActive && modelReady && !modelError) {
-      setStatusMsg('Cámara activa. Analizando entorno.');
-    }
-  }, [modelReady, isActive, modelError]);
 
   return (
     <div ref={containerRef} className="app-container" role="application" aria-label="Sentra Visión">
-      <h1 className="app-title" role="heading" aria-level={1} aria-label="Sentra Visión">Sentra Visión</h1>
+      <h1 className="app-title" role="heading" aria-level={1} aria-label="Sentra Visión">
+        🎯 Sentra Visión
+      </h1>
+
       <button
         className={`main-button ${isActive ? 'active' : 'inactive'}`}
         onClick={handleToggle}
@@ -141,33 +184,98 @@ function App() {
         aria-pressed={isActive}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleToggle(); } }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleToggle();
+          }
+        }}
       >
         {isActive ? 'DESACTIVAR' : 'ACTIVAR'}
       </button>
+
       <div className="status-container" role="status" aria-live="polite" aria-atomic="true">
         <p className="status-text">
-          <span className="status-dot" data-status={cameraStatus} /> Cámara: {cameraStatus}
+          <span className="status-dot" data-status={cameraStatus} />
+          Cámara: {cameraStatus}
         </p>
         {isActive && (
-          <>
-            <p className="detection-text">Objetos detectados: {count}</p>
-            {count > 0 && (
-              <p className="labels-text" aria-label={`Objetos: ${[...new Set(labels)].slice(0, 5).map(labelToEs).join(', ')}`}>
-                {[...new Set(labels)].slice(0, 5).map(labelToEs).join(', ')}
-              </p>
+          <p className="detection-text">
+            👁️ Objetos detectados: {detectionCount}
+          </p>
+        )}
+        {isActive && detectedLabels.length > 0 && (
+          <p className="labels-text">
+            {detectedLabels.slice(0, 3).join(', ')}
+          </p>
+        )}
+        {error && (
+          <p className="error-text" role="alert">⚠️ {error}</p>
+        )}
+        {isModelLoading && (
+          <p className="loading-text">🔄 Cargando modelo de IA...</p>
+        )}
+        
+        {/* 🔥 INDICADORES DE ÉTICA Y TRAZABILIDAD */}
+        {isActive && (
+          <div className="ethics-indicators">
+            <span className={`indicator ${ethicalFilterActive ? 'active' : 'inactive'}`}>
+              {ethicalFilterActive ? '🛡️ Ética activa' : '⚠️ Ética desactivada'}
+            </span>
+            <span className={`indicator ${chainVerified ? 'active' : 'inactive'}`}>
+              {chainVerified ? '🔗 Cadena verificada' : '⚠️ Cadena rota'}
+            </span>
+            {vetoRequired && (
+              <span className="indicator veto">
+                🔒 Veto humano requerido: {lastVetoDecision || 'Acción crítica'}
+              </span>
             )}
-          </>
+            {eventCount > 0 && (
+              <span className="indicator info">
+                📋 Eventos registrados: {eventCount}
+              </span>
+            )}
+          </div>
         )}
-        {isActive && !modelReady && !modelError && (
-          <p className="loading-text">Cargando modelo de IA...</p>
-        )}
-        {error && <p className="error-text" role="alert">Error: {error}</p>}
       </div>
-      <p className="status-msg" aria-live="polite">{statusMsg}</p>
-      <p className="gesture-hint" aria-hidden="true">Doble toque en pantalla para activar/desactivar</p>
-      <p className="version-text">v3.1.2-PROT · Soberanía del dato</p>
-      <video ref={videoRef} className="hidden-video" aria-hidden="true" playsInline muted />
+
+      <p className="gesture-hint" aria-hidden="true">
+        Doble toque en pantalla para activar/desactivar
+      </p>
+      
+      <div className="footer">
+        <p className="version-text">
+          v3.1.2-PROT · Soberanía del dato
+        </p>
+        <button 
+          className="debug-toggle"
+          onClick={() => setShowDebug(!showDebug)}
+          aria-label="Mostrar información de depuración"
+        >
+          {showDebug ? '🔽 Ocultar debug' : '🔼 Mostrar debug'}
+        </button>
+      </div>
+
+      {showDebug && isActive && evolis && (
+        <div className="debug-panel">
+          <h4>🔍 Estado del sistema</h4>
+          <p>Eventos totales: {evolis.getChain().length}</p>
+          <p>Cadena verificada: {chainVerified ? '✅ Sí' : '❌ No'}</p>
+          <p>Último evento: {evolis.getLastEvent()?.type || 'Ninguno'}</p>
+          <p>Veto requerido: {vetoRequired ? '✅ Sí' : '❌ No'}</p>
+          <button 
+            onClick={() => {
+              const stats = evolis.getStats();
+              console.log('[Debug] Stats:', stats);
+              alert(`Eventos: ${stats.totalEvents}\nCadena verificada: ${stats.chainVerified}`);
+            }}
+          >
+            Ver estadísticas
+          </button>
+        </div>
+      )}
+
+      <video ref={videoRef} className="hidden-video" aria-hidden="true" playsInline />
     </div>
   );
 }
