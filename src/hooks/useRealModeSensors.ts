@@ -1,163 +1,426 @@
-import { useEffect, useRef } from 'react';
-import { useApp } from '../context/AppContext';
+// src/hooks/useRealModeSensors.ts
+// Hook de detección de objetos con COCO-SSD + MoralNode (ética) + EVOLIS (trazabilidad)
+// Offline-first, lazy loading, veto humano
 
-// NOTE:
-// The repo didn't include a ../vision/detector or ../events module. To avoid broken imports,
-// this hook provides a self-contained loader/detector using @tensorflow-models/coco-ssd.
-// Calls that previously emitted a global "generateEvent" have been removed — detections are
-// still set into app state via setDetectedObjects and passed to the bridge if present.
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { moralNode } from '../core/MoralNode';
+import { evolis } from '../core/EVOLIS';
+import { tcreiBridge } from '../core/TCREIBridge';
+import { geminiService } from '../services/GeminiService';
 
-let _model: any | null = null;
-let _loadingModel = false;
+interface DetectedObject {
+  bbox: [number, number, number, number];
+  class: string;
+  score: number;
+}
 
-/**
- * Load the COCO-SSD model if not already loaded.
- */
-async function loadModel() {
-  if (_model) return _model;
-  if (_loadingModel) {
-    while (_loadingModel && !_model) {
-      // small wait until model loads
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((r) => setTimeout(r, 50));
+interface SensorState {
+  isModelLoaded: boolean;
+  detections: DetectedObject[];
+  filteredDetections: DetectedObject[];
+  error: string | null;
+  fps: number;
+  isLoading: boolean;
+  ethicalFilterActive: boolean;
+  isVetoRequired: boolean;
+  lastVetoDecision: string | null;
+  chainVerified: boolean;
+}
+
+interface UseRealModeSensorsProps {
+  videoRef: React.RefObject<HTMLVideoElement>;
+  enabled: boolean;
+  onDetection?: (detections: DetectedObject[]) => void;
+  onEthicalFilter?: (detections: DetectedObject[], allowed: boolean) => void;
+  maxDetections?: number;
+  minConfidence?: number;
+  lazyLoad?: boolean;
+  enableEthics?: boolean;
+  enableTracing?: boolean;
+  enableContext?: boolean;
+}
+
+export function useRealModeSensors({
+  videoRef,
+  enabled,
+  onDetection,
+  onEthicalFilter,
+  maxDetections = 10,
+  minConfidence = 0.5,
+  lazyLoad = true,
+  enableEthics = true,
+  enableTracing = true,
+  enableContext = false
+}: UseRealModeSensorsProps) {
+  const [state, setState] = useState<SensorState>({
+    isModelLoaded: false,
+    detections: [],
+    filteredDetections: [],
+    error: null,
+    fps: 0,
+    isLoading: false,
+    ethicalFilterActive: enableEthics,
+    isVetoRequired: false,
+    lastVetoDecision: null,
+    chainVerified: true
+  });
+
+  const modelRef = useRef<any>(null);
+  const animationRef = useRef<number>();
+  const frameCountRef = useRef(0);
+  const lastFpsUpdateRef = useRef(Date.now());
+  const isInitializedRef = useRef(false);
+  const loadAttemptedRef = useRef(false);
+  const lastDetectionCountRef = useRef(0);
+  const contextBufferRef = useRef<DetectedObject[]>([]);
+
+  // Cargar modelo desde CDN (fallback) o local
+  const loadModel = useCallback(async () => {
+    if (modelRef.current || loadAttemptedRef.current) return;
+    
+    loadAttemptedRef.current = true;
+    setState(prev => ({ ...prev, isLoading: true, error: null }));
+
+    try {
+      console.log('[useRealModeSensors] Cargando modelo COCO-SSD...');
+      
+      // Verificar si ya está cargado globalmente
+      // @ts-ignore
+      if (typeof cocoSsd !== 'undefined') {
+        // @ts-ignore
+        await tf.setBackend('webgl');
+        // @ts-ignore
+        await tf.ready();
+        // @ts-ignore
+        const model = await cocoSsd.load({
+          base: 'lite_mobilenet_v2'
+        });
+        modelRef.current = model;
+        setState(prev => ({
+          ...prev,
+          isModelLoaded: true,
+          isLoading: false,
+          error: null
+        }));
+        console.log('[useRealModeSensors] Modelo cargado desde CDN');
+        return;
+      }
+
+      // Intentar importar dinámicamente
+      try {
+        const [cocoModule, tfModule] = await Promise.all([
+          import('@tensorflow-models/coco-ssd'),
+          import('@tensorflow/tfjs')
+        ]);
+
+        await tfModule.setBackend('webgl');
+        await tfModule.ready();
+        const model = await cocoModule.load({
+          base: 'lite_mobilenet_v2'
+        });
+        modelRef.current = model;
+        setState(prev => ({
+          ...prev,
+          isModelLoaded: true,
+          isLoading: false,
+          error: null
+        }));
+        console.log('[useRealModeSensors] Modelo cargado desde NPM');
+      } catch (importError) {
+        // Fallback: intentar cargar desde CDN con scripts
+        console.warn('[useRealModeSensors] Fallback a CDN...');
+        await loadModelFromCDN();
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido al cargar el modelo';
+      console.error('[useRealModeSensors] Error cargando modelo:', error);
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        error: errorMessage,
+        isModelLoaded: false
+      }));
+      loadAttemptedRef.current = false;
     }
-    return _model;
-  }
-  _loadingModel = true;
-  try {
-    const coco = await import('@tensorflow-models/coco-ssd');
-    // ensure tfjs loaded
-    await import('@tensorflow/tfjs');
-    _model = await coco.load();
-    return _model;
-  } catch (e) {
-    _model = null;
-    return null;
-  } finally {
-    _loadingModel = false;
-  }
-}
+  }, []);
 
-/** Has the model finished loading? */
-function isModelLoaded(): boolean {
-  return _model !== null;
-}
+  // Cargar modelo desde CDN (fallback)
+  const loadModelFromCDN = useCallback(() => {
+    return new Promise<void>((resolve, reject) => {
+      try {
+        // Cargar TFJS
+        const tfScript = document.createElement('script');
+        tfScript.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js';
+        tfScript.onload = () => {
+          // Cargar COCO-SSD
+          const cocoScript = document.createElement('script');
+          cocoScript.src = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js';
+          cocoScript.onload = async () => {
+            try {
+              // @ts-ignore
+              await tf.setBackend('webgl');
+              // @ts-ignore
+              await tf.ready();
+              // @ts-ignore
+              const model = await cocoSsd.load({
+                base: 'lite_mobilenet_v2'
+              });
+              modelRef.current = model;
+              setState(prev => ({
+                ...prev,
+                isModelLoaded: true,
+                isLoading: false,
+                error: null
+              }));
+              console.log('[useRealModeSensors] Modelo cargado desde CDN (fallback)');
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
+          };
+          cocoScript.onerror = reject;
+          document.head.appendChild(cocoScript);
+        };
+        tfScript.onerror = reject;
+        document.head.appendChild(tfScript);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }, []);
 
-/**
- * Run detection on the given HTMLVideoElement.
- * Returns an array of prediction objects from coco-ssd filtered by minScore.
- */
-async function detectObjects(video: HTMLVideoElement, minScore = 0.5): Promise<any[]> {
-  const model = await loadModel();
-  if (!model) return [];
-  try {
-    const preds: any[] = await model.detect(video as any);
-    if (!Array.isArray(preds)) return [];
-    if (typeof minScore !== 'number') return preds;
-    return preds.filter((p) => (p.score ?? 0) >= minScore);
-  } catch {
-    return [];
-  }
-}
+  // Detectar objetos en el video
+  const detectObjects = useCallback(async () => {
+    if (!videoRef.current || !modelRef.current || !enabled) return;
 
-export default function useRealModeSensors() {
-  const { state, updateSettings, setDetectedObjects } = useApp();
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const detectionRafRef = useRef<number | null>(null);
-  const lastEventTimeRef = useRef<number>(0);
-  const cancelledRef = useRef<boolean>(false);
-  const voiceManagerRef = useRef<any>(null);
-  const bridgeRef = useRef<any>(null);
+    try {
+      const video = videoRef.current;
+      if (video.readyState < 2) return;
 
-  const setVideo = (el: HTMLVideoElement | null) => {
-    videoRef.current = el;
-  };
+      const detections = await modelRef.current.detect(video);
+      
+      // Filtrar por confianza
+      let filtered = detections
+        .filter((d: any) => d.score >= minConfidence)
+        .slice(0, maxDetections);
 
+      // 🔥 PASO 1: FILTRO ÉTICO (MoralNode)
+      let ethicalFiltered = filtered;
+      let vetoRequired = false;
+      let vetoReason: string | null = null;
+
+      if (enableEthics) {
+        // Evaluar con MoralNode
+        const moralDecision = moralNode.evaluate({
+          detections: filtered,
+          criticalAction: filtered.some((d: any) => 
+            ['knife', 'gun', 'weapon', 'scissors'].includes(d.class)
+          )
+        });
+
+        if (!moralDecision.allowed) {
+          // Si hay veto ético, filtrar los objetos problemáticos
+          const blockedClasses = ['knife', 'gun', 'weapon', 'scissors'];
+          ethicalFiltered = filtered.filter((d: any) => 
+            !blockedClasses.includes(d.class)
+          );
+          vetoRequired = true;
+          vetoReason = moralDecision.reason || 'Filtro ético activado';
+          
+          // Registrar evento en EVOLIS
+          if (enableTracing) {
+            evolis.registerEvent('DECISION', {
+              action: 'ETHICAL_FILTER',
+              reason: moralDecision.reason,
+              rulesApplied: moralDecision.rulesApplied,
+              originalDetections: filtered.length,
+              filteredDetections: ethicalFiltered.length
+            }, moralDecision);
+          }
+        }
+
+        // Notificar al callback de filtro ético
+        if (onEthicalFilter) {
+          onEthicalFilter(ethicalFiltered, moralDecision.allowed);
+        }
+      }
+
+      // 🔥 PASO 2: REGISTRO EN EVOLIS (trazabilidad)
+      if (enableTracing) {
+        const hasChanged = ethicalFiltered.length !== lastDetectionCountRef.current;
+        if (hasChanged || ethicalFiltered.length > 0) {
+          evolis.registerEvent('DETECTION', {
+            total: ethicalFiltered.length,
+            objects: ethicalFiltered.map((d: any) => ({ 
+              class: d.class, 
+              confidence: d.score 
+            })),
+            vetoRequired,
+            vetoReason
+          });
+          
+          // Verificar la cadena periódicamente
+          if (evolis.getChain().length % 10 === 0) {
+            const verified = evolis.verifyChain();
+            setState(prev => ({ ...prev, chainVerified: verified }));
+          }
+        }
+        lastDetectionCountRef.current = ethicalFiltered.length;
+      }
+
+      // 🔥 PASO 3: CONTEXTO (TCREIBridge + Gemini)
+      if (enableContext && ethicalFiltered.length > 0 && ethicalFiltered.length % 3 === 0) {
+        const prompt = tcreiBridge.generatePrompt({
+          type: 'CONTEXT',
+          detectedObjects: ethicalFiltered.map((d: any) => ({ 
+            label: d.class, 
+            confidence: d.score 
+          })),
+          priority: ethicalFiltered.some((d: any) => 
+            ['knife', 'gun', 'weapon'].includes(d.class)
+          ) ? 'CRITICAL' : 'MEDIUM'
+        });
+        
+        // Guardar en buffer para contexto
+        contextBufferRef.current = ethicalFiltered;
+        
+        // Generar respuesta contextual (asíncrono, no bloquea)
+        geminiService.generateResponse({
+          type: 'CONTEXT',
+          detectedObjects: ethicalFiltered.map((d: any) => ({ 
+            label: d.class, 
+            confidence: d.score 
+          }))
+        }).then(response => {
+          if (response.text) {
+            console.log('[useRealModeSensors] Contexto:', response.text);
+          }
+        }).catch(err => {
+          console.warn('[useRealModeSensors] Error en contexto:', err);
+        });
+      }
+
+      // Actualizar FPS
+      frameCountRef.current++;
+      const now = Date.now();
+      if (now - lastFpsUpdateRef.current >= 1000) {
+        const fps = frameCountRef.current;
+        frameCountRef.current = 0;
+        lastFpsUpdateRef.current = now;
+        setState(prev => ({ ...prev, fps }));
+      }
+
+      // Actualizar estado
+      setState(prev => ({
+        ...prev,
+        detections: filtered,
+        filteredDetections: ethicalFiltered,
+        isVetoRequired: vetoRequired,
+        lastVetoDecision: vetoReason
+      }));
+      
+      // Notificar detecciones (filtradas éticamente)
+      if (onDetection) {
+        onDetection(ethicalFiltered);
+      }
+
+    } catch (error) {
+      console.error('[useRealModeSensors] Error detectando objetos:', error);
+      setState(prev => ({ 
+        ...prev, 
+        error: 'Error en detección: ' + (error instanceof Error ? error.message : 'desconocido')
+      }));
+    }
+  }, [videoRef, enabled, minConfidence, maxDetections, onDetection, onEthicalFilter, enableEthics, enableTracing, enableContext]);
+
+  // Iniciar detección
   useEffect(() => {
-    const realMode = !!state.settings.realMode;
-    const powerSaving = !!state.settings.powerSavingMode;
-    cancelledRef.current = false;
-
-    if (!realMode || powerSaving) {
-      // stop sensors / voice
-      if (detectionRafRef.current) {
-        cancelAnimationFrame(detectionRafRef.current);
-        detectionRafRef.current = null;
+    if (!enabled) {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
       }
-
-      if (voiceManagerRef.current) {
-        try { voiceManagerRef.current.cancel(); } catch (_) {}
-        try { voiceManagerRef.current.stopRecognition(); } catch (_) {}
-        voiceManagerRef.current = null;
-      }
-      if (bridgeRef.current) bridgeRef.current = null;
-
       return;
     }
 
-    // Start model loading in background (non-blocking)
-    loadModel().catch(() => { /* ignore load errors here */ });
-
-    // Start detection loop when model is loaded or after a short wait
-    const startWhenReady = async () => {
-      let tries = 0;
-      while (!_model && tries < 40) { // wait up to ~2s (40*50ms)
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((r) => setTimeout(r, 50));
-        tries += 1;
+    const initDetection = async () => {
+      if (!isInitializedRef.current) {
+        isInitializedRef.current = true;
+        
+        if (lazyLoad) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        await loadModel();
       }
 
-      const runDetection = async () => {
-        if (cancelledRef.current) return;
-        if (!videoRef.current || !videoRef.current.videoWidth) {
-          detectionRafRef.current = requestAnimationFrame(runDetection);
-          return;
-        }
-
-        try {
-          const objects = await detectObjects(videoRef.current, 0.5);
-          if (!cancelledRef.current) {
-            try {
-              setDetectedObjects(objects);
-            } catch (_) {}
-
-            try {
-              bridgeRef.current?.handlePredictions(objects || []);
-            } catch (_) {}
-
-            // Previously, the code emitted a global event (generateEvent) when
-            // objects were detected. That function/module is not present in this
-            // repository, so we do not call it here. If you need centralized event
-            // emission, implement generateEvent in src/lib/events.ts and reintroduce
-            // the call.
-            if (objects.length > 0) {
-              const now = Date.now();
-              if (now - lastEventTimeRef.current > 5000) {
-                lastEventTimeRef.current = now;
-                // Optional: additional per-detection logic can go here.
-              }
-            }
-          }
-        } catch {
-          // swallow per-frame detection errors
-        }
-
-        detectionRafRef.current = requestAnimationFrame(runDetection);
+      // Iniciar loop de detección
+      const detectLoop = () => {
+        detectObjects();
+        animationRef.current = requestAnimationFrame(detectLoop);
       };
 
-      detectionRafRef.current = requestAnimationFrame(runDetection);
+      detectLoop();
     };
 
-    startWhenReady().catch(() => { /* ignore */ });
+    initDetection();
 
     return () => {
-      cancelledRef.current = true;
-      if (detectionRafRef.current) {
-        cancelAnimationFrame(detectionRafRef.current);
-        detectionRafRef.current = null;
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [state.settings.realMode, state.settings.powerSavingMode, setDetectedObjects]);
+  }, [enabled, loadModel, detectObjects, lazyLoad]);
 
-  return { setVideo };
+  // Verificar cadena periódicamente
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (enableTracing && evolis.getChain().length > 0) {
+        const verified = evolis.verifyChain();
+        setState(prev => ({ ...prev, chainVerified: verified }));
+      }
+    }, 30000); // Cada 30 segundos
+
+    return () => clearInterval(interval);
+  }, [enableTracing]);
+
+  // Limpiar recursos al desmontar
+  useEffect(() => {
+    return () => {
+      if (modelRef.current) {
+        modelRef.current = null;
+      }
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+      // No limpiar EVOLIS para mantener la trazabilidad
+    };
+  }, []);
+
+  // Función para obtener estadísticas de EVOLIS
+  const getChainStats = useCallback(() => {
+    if (!enableTracing) return null;
+    return evolis.getStats();
+  }, [enableTracing]);
+
+  // Función para obtener el log de MoralNode
+  const getMoralLog = useCallback(() => {
+    if (!enableEthics) return [];
+    return moralNode.getLog();
+  }, [enableEthics]);
+
+  // Función para forzar verificación de cadena
+  const verifyChain = useCallback(() => {
+    if (!enableTracing) return false;
+    return evolis.verifyChain();
+  }, [enableTracing]);
+
+  return {
+    ...state,
+    loadModel,
+    getChainStats,
+    getMoralLog,
+    verifyChain,
+    evolis: enableTracing ? evolis : null,
+    moralNode: enableEthics ? moralNode : null
+  };
 }
