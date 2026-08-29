@@ -1,375 +1,403 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
-import { useApp } from '../context/AppContext';
-import DetectionVoiceBridge from '../voice/detection-voice-bridge';
-import type { VisionMode, TCREIInteractionRecorder } from '../voice/detection-voice-bridge';
-import type { TCREIPrompt, SentraEvent } from '../core/TCREIBridge';
-import { tcreiPromptToText } from '../core/TCREIBridge';
-import { signAndChain } from '../lib/crypto';
-import vm from '../voice/manager';
+// src/components/AccessibleMinimalUI.tsx
+// Interfaz accesible para Sentra Visión — Un solo botón, voz, vibración, doble toque
+// Diseñada para personas ciegas o con baja visión — TalkBack/NVDA compatible
 
-const DETECTION_INTERVAL_MS = 1000;
-const OCR_INTERVAL_MS = 5000;
-const OCR_CANVAS_W = 640;
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { evolis } from '../core/EVOLIS';
+import { moralNode } from '../core/MoralNode';
+import { geminiService } from '../services/GeminiService';
+import { useRealModeSensors } from '../hooks/useRealModeSensors';
+import './AccessibleMinimalUI.css';
 
-export default function AccessibleMinimalUI(): JSX.Element {
-  const { state, updateSettings, setSensors, setTfjsStatus, setDetectedObjects, addEvent } = useApp();
+// ============================================================
+// 1. PROPS
+// ============================================================
 
-  const btnRef = useRef<HTMLButtonElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const detectionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const ocrTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const bridgeRef = useRef<DetectionVoiceBridge | null>(null);
-  const modelRef = useRef<any>(null);
-  const loadingModelRef = useRef(false);
-  const ocrWorkerRef = useRef<any>(null);
-  const ocrLoadingRef = useRef(false);
-  const ocrBusyRef = useRef(false);
-  const [statusMsg, setStatusMsg] = useState('Sentra Vision listo. Toque el botón para activar la descripción del entorno.');
-  const [cameraReady, setCameraReady] = useState(false);
-  const [modelReady, setModelReady] = useState(false);
-  const [ocrReady, setOcrReady] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [lastOcrText, setLastOcrText] = useState<string | null>(null);
-  const [motionActive, setMotionActive] = useState(false);
-  const [visionMode, setVisionMode] = useState<VisionMode>('navigation');
-  const [currentCooldown, setCurrentCooldown] = useState(3000);
-  const lastHashRef = useRef<string>('0'.repeat(64));
+interface AccessibleMinimalUIProps {
+  onActivate?: () => void;
+  onDeactivate?: () => void;
+  onDetection?: (objects: Array<{ class: string; confidence: number }>) => void;
+  onError?: (error: Error) => void;
+  enableVoice?: boolean;
+  enableHaptic?: boolean;
+  enableEthics?: boolean;
+  enableTracing?: boolean;
+  enableContext?: boolean;
+}
 
-  const realMode = !!state.settings.realMode;
+// ============================================================
+// 2. COMPONENTE PRINCIPAL
+// ============================================================
 
-  const recordTCREIInteraction = useCallback<TCREIInteractionRecorder>(
-    async (prompt: TCREIPrompt, response: string, event: SentraEvent) => {
-      try {
-        const baseEvent = {
-          id: `tcrei-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          type: 'TCREI_INTERACTION',
-          timestamp: Date.now(),
-          lat: 0,
-          lng: 0,
-          metadata: {
-            source: 'tcrei-bridge',
-            prompt: tcreiPromptToText(prompt),
-            response,
-            eventType: event.tipo,
-            confidence: event.confianza ?? null,
-          },
-          demo: !realMode,
-        };
-        const result = await signAndChain(baseEvent, lastHashRef.current);
-        lastHashRef.current = result.hash;
-        addEvent({
-          ...baseEvent,
-          hash: result.hash,
-          previousHash: result.previousHash,
-          signature: result.signature,
-          cryptoVerified: result.cryptoVerified,
-        });
-      } catch {
-        // best-effort — never block voice on chain failure
+export const AccessibleMinimalUI: React.FC<AccessibleMinimalUIProps> = ({
+  onActivate,
+  onDeactivate,
+  onDetection,
+  onError,
+  enableVoice = true,
+  enableHaptic = true,
+  enableEthics = true,
+  enableTracing = true,
+  enableContext = true
+}) => {
+  // ============================================================
+  // 3. ESTADO
+  // ============================================================
+
+  const [isActive, setIsActive] = useState(false);
+  const [cameraStatus, setCameraStatus] = useState<'INACTIVA' | 'ACTIVA' | 'ERROR'>('INACTIVA');
+  const [detectionCount, setDetectionCount] = useState(0);
+  const [detectedLabels, setDetectedLabels] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [ethicalFilterActive, setEthicalFilterActive] = useState(enableEthics);
+  const [chainVerified, setChainVerified] = useState(true);
+  const [vetoRequired, setVetoRequired] = useState(false);
+  const [lastVetoDecision, setLastVetoDecision] = useState<string | null>(null);
+  const [eventCount, setEventCount] = useState(0);
+  const [isModelLoading, setIsModelLoading] = useState(false);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const lastTapRef = useRef<number>(0);
+  const lastDetectionCountRef = useRef(0);
+
+  // ============================================================
+  // 4. FUNCIONES DE VOZ
+  // ============================================================
+
+  const speak = useCallback((text: string) => {
+    if (!enableVoice) return;
+    if ('speechSynthesis' in window) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.9;
+      utterance.pitch = 1;
+      utterance.volume = 1;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    }
+  }, [enableVoice]);
+
+  // ============================================================
+  // 5. FUNCIONES DE VIBRACIÓN
+  // ============================================================
+
+  const vibrate = useCallback((duration: number = 50) => {
+    if (!enableHaptic) return;
+    if (navigator.vibrate) {
+      navigator.vibrate(duration);
+    }
+  }, [enableHaptic]);
+
+  // ============================================================
+  // 6. HOOK DE DETECCIÓN
+  // ============================================================
+
+  const {
+    detections,
+    filteredDetections,
+    error: detectionError,
+    isModelLoaded,
+    isLoading,
+    ethicalFilterActive: ethicsActive,
+    isVetoRequired,
+    lastVetoDecision: vetoDecision,
+    chainVerified: chainOk,
+    getChainStats,
+    evolis: evolisInstance
+  } = useRealModeSensors({
+    videoRef,
+    enabled: isActive,
+    enableEthics,
+    enableTracing,
+    enableContext,
+    onDetection: (objects) => {
+      const labels = objects.map(o => o.class);
+      setDetectedLabels(labels);
+      setDetectionCount(objects.length);
+      
+      if (onDetection) {
+        onDetection(objects);
+      }
+
+      // Anunciar cambios significativos
+      if (objects.length > 0 && objects.length % 3 === 0) {
+        const topObjects = labels.slice(0, 3).join(', ');
+        speak(`Detectados: ${topObjects}`);
+        vibrate(30);
       }
     },
-    [addEvent, realMode],
-  );
-
-  useEffect(() => {
-    bridgeRef.current = new DetectionVoiceBridge(undefined, {
-      scoreThreshold: 0.5,
-      minFramesToConfirm: 3,
-      forgetMs: 3000,
-      speakPriority: 0,
-      recordInteraction: recordTCREIInteraction,
-    });
-    return () => {
-      if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
-      if (ocrTimerRef.current) clearInterval(ocrTimerRef.current);
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
+    onEthicalFilter: (objects, allowed) => {
+      if (!allowed) {
+        speak('⚠️ Filtro ético activado');
+        vibrate(100);
       }
-      if (ocrWorkerRef.current) {
-        ocrWorkerRef.current.terminate().catch(() => {});
-        ocrWorkerRef.current = null;
-      }
-      bridgeRef.current?.stopMotionTracking();
-      vm.cancel();
-    };
-  }, []);
-
-  const loadModel = useCallback(async () => {
-    if (modelRef.current || loadingModelRef.current) return modelRef.current;
-    loadingModelRef.current = true;
-    try {
-      const coco = await import('@tensorflow-models/coco-ssd');
-      await import('@tensorflow/tfjs');
-      modelRef.current = await coco.load({ base: 'lite_mobilenet_v2' });
-      setTfjsStatus(true, false);
-      setModelReady(true);
-      return modelRef.current;
-    } catch {
-      modelRef.current = null;
-      setTfjsStatus(false, true);
-      setModelReady(false);
-      return null;
-    } finally {
-      loadingModelRef.current = false;
     }
-  }, [setTfjsStatus]);
+  });
 
-  const loadOcrWorker = useCallback(async () => {
-    if (ocrWorkerRef.current || ocrLoadingRef.current) return ocrWorkerRef.current;
-    ocrLoadingRef.current = true;
-    try {
-      const { createWorker } = await import('tesseract.js');
-      const worker = await createWorker({ langPath: 'spa' } as any);
-      ocrWorkerRef.current = worker;
-      setOcrReady(true);
-      return worker;
-    } catch {
-      ocrWorkerRef.current = null;
-      setOcrReady(false);
-      return null;
-    } finally {
-      ocrLoadingRef.current = false;
-    }
-  }, []);
+  // ============================================================
+  // 7. MANEJO DE ACTIVACIÓN/DESACTIVACIÓN
+  // ============================================================
 
-  const startStream = useCallback(async () => {
-    if (!realMode) {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
-      }
-      if (videoRef.current) videoRef.current.srcObject = null;
-      setSensors({ cameraActive: false, cameraError: null });
-      setCameraReady(false);
-      return;
-    }
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        const msg = 'getUserMedia no soportado en este navegador';
-        setSensors({ cameraError: msg, cameraActive: false });
-        setErrorMsg(msg);
-        return;
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false,
-      });
-      streamRef.current = stream;
+  const handleToggle = useCallback(async () => {
+    vibrate(50);
+
+    const newState = !isActive;
+    setIsActive(newState);
+
+    if (newState) {
+      speak('Activando visión');
+      setCameraStatus('ACTIVA');
+      setError(null);
+
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
-      }
-      setSensors({ cameraActive: true, cameraError: null });
-      setCameraReady(true);
-      setErrorMsg(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Error al acceder a la cámara';
-      setSensors({ cameraError: msg, cameraActive: false });
-      setErrorMsg(msg);
-      setStatusMsg(`Error: ${msg}. Toque el botón para reintentar.`);
-    }
-  }, [realMode, setSensors]);
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+          });
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+          speak('Cámara activada');
 
-  const runDetection = useCallback(async () => {
-    if (!realMode || !cameraReady) return;
-    const model = modelRef.current;
-    if (!model || !videoRef.current || !videoRef.current.videoWidth) return;
-    try {
-      const predictions = await model.detect(videoRef.current, 20, 0.5);
-      const videoW = videoRef.current.videoWidth;
-      const videoH = videoRef.current.videoHeight;
-      setDetectedObjects(predictions);
-      if (bridgeRef.current && predictions.length > 0) {
-        bridgeRef.current.handlePredictions(predictions, videoW, videoH);
-      }
-      if (bridgeRef.current) {
-        setCurrentCooldown(bridgeRef.current.getCurrentCooldown());
-        setVisionMode(bridgeRef.current.visionMode);
-      }
-    } catch {
-      // swallow per-frame errors
-    }
-  }, [realMode, cameraReady, setDetectedObjects]);
+          if (onActivate) {
+            onActivate();
+          }
 
-  const runOcr = useCallback(async () => {
-    if (!realMode || !cameraReady || !ocrWorkerRef.current || ocrBusyRef.current) return;
-    if (!videoRef.current || !videoRef.current.videoWidth) return;
-    ocrBusyRef.current = true;
-    try {
-      const video = videoRef.current;
-      const canvas = document.createElement('canvas');
-      const scale = OCR_CANVAS_W / video.videoWidth;
-      canvas.width = OCR_CANVAS_W;
-      canvas.height = Math.round(video.videoHeight * scale);
-      const ctx2d = canvas.getContext('2d');
-      if (!ctx2d) return;
-      ctx2d.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const { data } = await ocrWorkerRef.current.recognize(canvas);
-      const text = (data?.text || '').trim();
-      if (text && text.length >= 3 && text !== lastOcrText) {
-        setLastOcrText(text);
-        bridgeRef.current?.speakOcrText(text);
+          // Registrar evento de activación en EVOLIS
+          if (enableTracing && evolisInstance) {
+            evolisInstance.registerEvent('ACTION', { action: 'ACTIVATE', timestamp: Date.now() });
+          }
+
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : 'Error al activar cámara';
+          speak('Error al activar cámara');
+          setError(errorMsg);
+          setCameraStatus('ERROR');
+          setIsActive(false);
+
+          if (onError && err instanceof Error) {
+            onError(err);
+          }
+        }
       }
-    } catch {
-      // swallow OCR errors
-    } finally {
-      ocrBusyRef.current = false;
+    } else {
+      speak('Desactivando visión');
+      setCameraStatus('INACTIVA');
+      setDetectionCount(0);
+      setDetectedLabels([]);
+
+      if (onDeactivate) {
+        onDeactivate();
+      }
+
+      // Registrar evento de desactivación en EVOLIS
+      if (enableTracing && evolisInstance) {
+        evolisInstance.registerEvent('ACTION', { action: 'DEACTIVATE', timestamp: Date.now() });
+      }
+
+      if (videoRef.current && videoRef.current.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach(track => track.stop());
+        videoRef.current.srcObject = null;
+      }
     }
-  }, [realMode, cameraReady, lastOcrText]);
+  }, [isActive, speak, vibrate, onActivate, onDeactivate, onError, enableTracing, evolisInstance]);
+
+  // ============================================================
+  // 8. DOBLE TOQUE EN PANTALLA
+  // ============================================================
 
   useEffect(() => {
-    startStream();
-    if (realMode) {
-      loadModel().then(() => {
-        setStatusMsg('Cámara activa. Describiendo el entorno.');
-        vm.speak('Cámara activa. Comenzando a describir el entorno.', 2, { interrupt: true, rate: 1.15 });
-      });
-      loadOcrWorker();
-      if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
-      detectionTimerRef.current = setInterval(runDetection, DETECTION_INTERVAL_MS);
-      if (ocrTimerRef.current) clearInterval(ocrTimerRef.current);
-      ocrTimerRef.current = setInterval(runOcr, OCR_INTERVAL_MS);
-    } else {
-      if (detectionTimerRef.current) { clearInterval(detectionTimerRef.current); detectionTimerRef.current = null; }
-      if (ocrTimerRef.current) { clearInterval(ocrTimerRef.current); ocrTimerRef.current = null; }
-      setDetectedObjects([]);
-      setLastOcrText(null);
-      if (cameraReady) {
-        setStatusMsg('Descripción detenida. Toque el botón para reactivar.');
-        vm.speak('Descripción detenida.', 2, { interrupt: true, rate: 1.15 });
+    const handleDoubleTap = (e: TouchEvent) => {
+      const now = Date.now();
+      const timeSinceLastTap = now - lastTapRef.current;
+
+      if (timeSinceLastTap < 300 && timeSinceLastTap > 0) {
+        e.preventDefault();
+        handleToggle();
+        lastTapRef.current = 0;
+      } else {
+        lastTapRef.current = now;
       }
-    }
-    return () => {
-      if (detectionTimerRef.current) { clearInterval(detectionTimerRef.current); detectionTimerRef.current = null; }
-      if (ocrTimerRef.current) { clearInterval(ocrTimerRef.current); ocrTimerRef.current = null; }
     };
-  }, [realMode, startStream, loadModel, loadOcrWorker, runDetection, runOcr, cameraReady, setDetectedObjects]);
 
-  const toggle = () => {
-    if (navigator.vibrate) navigator.vibrate(50);
-    if (!realMode) {
-      updateSettings({ realMode: true });
-      setStatusMsg('Activando cámara y descripción...');
-      vm.speak('Activando la descripción del entorno.', 2, { interrupt: true, rate: 1.15 });
-      setTimeout(() => {
-        if (bridgeRef.current) {
-          const ok = bridgeRef.current.startMotionTracking();
-          setMotionActive(ok);
-          if (ok) vm.speak('Seguimiento de movimiento activado.', 1, { rate: 1.15 });
-        }
-      }, 1500);
-    } else {
-      updateSettings({ realMode: false });
-      setStatusMsg('Desactivando descripción...');
-      vm.speak('Desactivando la descripción del entorno.', 2, { interrupt: true, rate: 1.15 });
-      if (bridgeRef.current) {
-        bridgeRef.current.stopMotionTracking();
-        setMotionActive(false);
-      }
+    const container = containerRef.current;
+    if (container) {
+      container.addEventListener('touchstart', handleDoubleTap, { passive: false });
     }
-    setTimeout(() => btnRef.current?.focus(), 200);
-  };
 
-  useEffect(() => { btnRef.current?.focus(); }, []);
+    return () => {
+      if (container) {
+        container.removeEventListener('touchstart', handleDoubleTap);
+      }
+    };
+  }, [handleToggle]);
 
-  const buttonLabel = realMode ? 'Desactivar descripción del entorno' : 'Activar descripción del entorno';
-  const buttonState = realMode ? 'Desactivar' : 'Activar';
+  // ============================================================
+  // 9. ACTUALIZAR INDICADORES DE ÉTICA Y TRAZABILIDAD
+  // ============================================================
 
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (!bridgeRef.current) return;
-    const t = e.touches[0];
-    bridgeRef.current.handleTouchStart(t.clientX, t.clientY);
-  };
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    if (!bridgeRef.current) return;
-    const t = e.changedTouches[0];
-    bridgeRef.current.handleTouchEnd(t.clientX, t.clientY);
-  };
+  useEffect(() => {
+    setEthicalFilterActive(ethicsActive);
+    setChainVerified(chainOk);
+    setVetoRequired(isVetoRequired);
+    setLastVetoDecision(vetoDecision);
+
+    if (isVetoRequired) {
+      speak('🔒 Veto humano requerido');
+      vibrate(100);
+    }
+
+    if (evolisInstance) {
+      const stats = evolisInstance.getStats();
+      setEventCount(stats.totalEvents);
+    }
+  }, [ethicsActive, chainOk, isVetoRequired, vetoDecision, evolisInstance, speak, vibrate]);
+
+  // ============================================================
+  // 10. KEYBOARD NAVIGATION
+  // ============================================================
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Enter o Espacio para activar/desactivar
+      if (e.key === 'Enter' || e.key === ' ') {
+        const target = e.target as HTMLElement;
+        if (target && target.classList.contains('main-button')) {
+          e.preventDefault();
+          handleToggle();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [handleToggle]);
+
+  // ============================================================
+  // 11. RENDER
+  // ============================================================
 
   return (
-    <main
-      role="main"
-      aria-label="Sentra Vision — Asistente visual para personas ciegas"
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
-      style={{
-        minHeight: '100vh', display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        background: '#000', color: '#FFFFFF', padding: '24px', gap: 20,
-      }}
+    <div
+      ref={containerRef}
+      className="accessible-minimal-ui"
+      role="application"
+      aria-label="Sentra Visión — Asistente Visual Cognitivo"
     >
-      <video ref={videoRef} autoPlay playsInline muted aria-hidden="true"
-        style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none', top: 0, left: 0 }}
-      />
-      <div style={{ width: '100%', maxWidth: 520, display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 20 }}>
-        <div aria-live="polite" aria-atomic="true" role="status"
-          style={{ textAlign: 'center', fontSize: 18, fontWeight: 600, color: '#FDE047', minHeight: 28 }}
-        >
-          {errorMsg ? `Error: ${errorMsg}` : statusMsg}
-        </div>
+      {/* TÍTULO */}
+      <h1
+        className="app-title"
+        role="heading"
+        aria-level={1}
+        aria-label="Sentra Visión"
+      >
+        🎯 Sentra Visión
+      </h1>
 
-        <button ref={btnRef} onClick={toggle} aria-pressed={realMode} aria-label={buttonLabel}
-          style={{
-            all: 'unset', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: realMode ? '#DC2626' : '#FBBF24', color: '#000', borderRadius: 16, height: 160,
-            width: '100%', textAlign: 'center', boxShadow: '0 6px 18px rgba(0,0,0,0.6)',
-            userSelect: 'none', transition: 'background 0.2s ease',
-          }}
-        >
-          <span style={{ fontSize: 36, fontWeight: 800, lineHeight: 1 }}>{buttonState}</span>
-        </button>
+      {/* BOTÓN PRINCIPAL */}
+      <button
+        className={`main-button ${isActive ? 'active' : 'inactive'}`}
+        onClick={handleToggle}
+        aria-label={isActive ? 'Desactivar visión' : 'Activar visión'}
+        aria-pressed={isActive}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleToggle();
+          }
+        }}
+      >
+        {isActive ? 'DESACTIVAR' : 'ACTIVAR'}
+      </button>
 
-        <div style={{ textAlign: 'center', fontSize: 16, color: '#E5E7EB', opacity: 0.9 }} aria-hidden="true">
-          Presione el botón para {realMode ? 'detener la descripción' : 'comenzar a describir el entorno'}.
-        </div>
+      {/* ESTADO */}
+      <div
+        className="status-container"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <p className="status-text">
+          <span className={`status-dot ${cameraStatus.toLowerCase()}`} />
+          Cámara: {cameraStatus}
+        </p>
 
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 8, flexWrap: 'wrap' }} aria-hidden="true">
-          <span style={{ fontSize: 13, color: cameraReady ? '#22C55E' : '#6B7280', fontWeight: 600 }}>
-            Cámara: {cameraReady ? 'Activa' : 'Inactiva'}
-          </span>
-          <span style={{ fontSize: 13, color: modelReady ? '#22C55E' : '#6B7280', fontWeight: 600 }}>
-            IA: {modelReady ? 'Cargada' : 'Cargando...'}
-          </span>
-          <span style={{ fontSize: 13, color: ocrReady ? '#22C55E' : '#6B7280', fontWeight: 600 }}>
-            OCR: {ocrReady ? 'Listo' : 'Cargando...'}
-          </span>
-        </div>
-
-        {realMode && (
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }} aria-hidden="true">
-            <span style={{ fontSize: 13, color: motionActive ? '#22C55E' : '#6B7280', fontWeight: 600 }}>
-              Movimiento: {motionActive ? 'Activo' : 'Off'}
-            </span>
-            <span style={{ fontSize: 13, color: '#FBBF24', fontWeight: 600 }}>
-              Modo: {visionMode === 'navigation' ? 'Navegación' : 'Reconocimiento'}
-            </span>
-            <span style={{ fontSize: 13, color: '#93C5FD', fontWeight: 600 }}>
-              Ritmo: {(currentCooldown / 1000).toFixed(1)}s
-            </span>
-          </div>
+        {isActive && (
+          <>
+            <p className="detection-text">
+              👁️ Objetos detectados: {detectionCount}
+            </p>
+            {detectedLabels.length > 0 && (
+              <p className="labels-text">
+                {detectedLabels.slice(0, 3).join(', ')}
+              </p>
+            )}
+          </>
         )}
 
-        {lastOcrText && (
-          <div aria-live="polite"
-            style={{ textAlign: 'center', fontSize: 14, color: '#93C5FD', minHeight: 20, padding: '8px 12px', background: 'rgba(30,58,138,0.3)', borderRadius: 8 }}
-            aria-label={`Último texto detectado: ${lastOcrText}`}
-          >
-            Texto: {lastOcrText}
-          </div>
+        {error && (
+          <p className="error-text" role="alert">
+            ⚠️ {error}
+          </p>
         )}
 
-        {realMode && (
-          <div style={{ textAlign: 'center', fontSize: 13, color: '#6B7280', padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: 8 }} aria-hidden="true">
-            Toque corto: repetir descripción · Doble toque: cambiar modo
-          </div>
+        {isLoading && (
+          <p className="loading-text">🔄 Cargando modelo de IA...</p>
         )}
 
-        <div id="a11y-announcer" aria-live="assertive" aria-atomic="true"
-          style={{ position: 'absolute', left: '-10000px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}
-        />
+        {/* INDICADORES DE ÉTICA Y TRAZABILIDAD */}
+        {isActive && (
+          <div className="ethics-indicators">
+            <span className={`indicator ${ethicalFilterActive ? 'active' : 'inactive'}`}>
+              {ethicalFilterActive ? '🛡️ Ética activa' : '⚠️ Ética desactivada'}
+            </span>
+            <span className={`indicator ${chainVerified ? 'active' : 'inactive'}`}>
+              {chainVerified ? '🔗 Cadena verificada' : '⚠️ Cadena rota'}
+            </span>
+            {vetoRequired && (
+              <span className="indicator veto">
+                🔒 Veto: {lastVetoDecision || 'Acción crítica'}
+              </span>
+            )}
+            {eventCount > 0 && (
+              <span className="indicator info">
+                📋 Eventos: {eventCount}
+              </span>
+            )}
+          </div>
+        )}
       </div>
-    </main>
+
+      {/* HINT DE DOBLE TOQUE */}
+      <p className="gesture-hint" aria-hidden="true">
+        Doble toque en pantalla para activar/desactivar
+      </p>
+
+      {/* FOOTER */}
+      <div className="footer">
+        <p className="version-text">
+          v3.1.2-PROT · Soberanía del dato
+        </p>
+        <p className="slogan-text">
+          Cuando todo lo demás se apaga, Sentra Core sigue ahí.
+        </p>
+      </div>
+
+      {/* VIDEO OCULTO */}
+      <video
+        ref={videoRef}
+        className="hidden-video"
+        aria-hidden="true"
+        playsInline
+      />
+    </div>
   );
-}
+};
+
+// ============================================================
+// 12. EXPORTACIÓN POR DEFECTO
+// ============================================================
+
+export default AccessibleMinimalUI;
