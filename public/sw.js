@@ -1,104 +1,243 @@
-// Sentra Visión Service Worker — Network-First with auto-purge
-const CACHE_VERSION = 'sentra-vision-v3';
-const STATIC_CACHE = `${CACHE_VERSION}-static`;
-const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
-const MAX_RUNTIME_ENTRIES = 60;
-const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// public/sw.js
+// Service Worker para Sentra Visión — PWA Offline-First
+// Cache estratégico para funcionar sin internet
 
-const STATIC_ASSETS = [
+const CACHE_NAME = 'sentra-vision-v3';
+const RUNTIME_CACHE = 'sentra-vision-runtime';
+
+// Recursos a cachear al instalar
+const PRECACHE_URLS = [
   '/',
   '/index.html',
   '/manifest.json',
   '/icon-192.png',
   '/icon-512.png',
+  '/apple-touch-icon.png'
 ];
 
-// ---- Install ---------------------------------------------------------------
+// Recursos que no deben cachearse (CDN, externos)
+const EXTERNAL_URLS = [
+  'cdn.jsdelivr.net',
+  'fonts.googleapis.com',
+  'fonts.gstatic.com'
+];
+
+// ============================================================
+// INSTALACIÓN — Precache de assets críticos
+// ============================================================
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(STATIC_CACHE).then((cache) => cache.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME)
+      .then((cache) => {
+        console.log('[SW] Cacheando assets críticos');
+        return cache.addAll(PRECACHE_URLS)
+          .catch((err) => {
+            console.warn('[SW] Error al cachear algunos archivos:', err);
+          });
+      })
       .then(() => self.skipWaiting())
   );
 });
 
-// ---- Activate --------------------------------------------------------------
+// ============================================================
+// ACTIVACIÓN — Limpiar caches antiguos
+// ============================================================
+
 self.addEventListener('activate', (event) => {
+  const currentCaches = [CACHE_NAME, RUNTIME_CACHE];
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys
-          .filter((k) => k !== STATIC_CACHE && k !== RUNTIME_CACHE)
-          .map((k) => caches.delete(k))
-      )
-    ).then(() => self.clients.claim())
+    caches.keys()
+      .then((cacheNames) => {
+        return cacheNames.filter(
+          (cacheName) => !currentCaches.includes(cacheName)
+        );
+      })
+      .then((cachesToDelete) => {
+        return Promise.all(
+          cachesToDelete.map((cacheToDelete) => {
+            console.log('[SW] Eliminando cache antiguo:', cacheToDelete);
+            return caches.delete(cacheToDelete);
+          })
+        );
+      })
+      .then(() => self.clients.claim())
   );
 });
 
-// ---- Fetch — Network-First -------------------------------------------------
+// ============================================================
+// FETCH — Estrategia de cache (Offline-First)
+// ============================================================
+
 self.addEventListener('fetch', (event) => {
-  const { request } = event;
-  if (request.method !== 'GET') return;
-
-  // Never cache Pipedream / Telegram / Nominatim API calls
+  const request = event.request;
   const url = new URL(request.url);
-  const isExternal =
-    url.hostname.includes('pipedream') ||
-    url.hostname.includes('telegram') ||
-    url.hostname.includes('nominatim') ||
-    url.hostname.includes('tensorflow') ||
-    url.hostname.includes('jsdelivr');
 
-  if (isExternal) return; // Let them pass through without caching
+  // Si la URL es externa, pasar directamente (sin cache)
+  if (EXTERNAL_URLS.some(external => url.hostname.includes(external))) {
+    event.respondWith(fetch(request));
+    return;
+  }
 
-  event.respondWith(networkFirst(request));
+  // Si es una solicitud de navegación (HTML), usar cache-first
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      caches.match(request)
+        .then((cachedResponse) => {
+          if (cachedResponse) {
+            return cachedResponse;
+          }
+          return fetch(request)
+            .then((networkResponse) => {
+              // Cachear la respuesta para futuras navegaciones
+              const responseClone = networkResponse.clone();
+              caches.open(CACHE_NAME)
+                .then((cache) => {
+                  cache.put(request, responseClone);
+                });
+              return networkResponse;
+            })
+            .catch(() => {
+              // Si falla, devolver el index.html cacheado
+              return caches.match('/index.html');
+            });
+        })
+    );
+    return;
+  }
+
+  // Para otros recursos (JS, CSS, imágenes) usar network-first con fallback a cache
+  event.respondWith(
+    fetch(request)
+      .then((networkResponse) => {
+        // Si la respuesta es válida, cachearla para futuras
+        if (networkResponse && networkResponse.status === 200) {
+          const responseClone = networkResponse.clone();
+          caches.open(RUNTIME_CACHE)
+            .then((cache) => {
+              cache.put(request, responseClone);
+            });
+        }
+        return networkResponse;
+      })
+      .catch(() => {
+        // Si falla la red, buscar en cache
+        return caches.match(request)
+          .then((cachedResponse) => {
+            if (cachedResponse) {
+              return cachedResponse;
+            }
+            // Si no está en cache, devolver respuesta offline
+            return new Response('Recurso no disponible offline', {
+              status: 503,
+              statusText: 'Service Unavailable'
+            });
+          });
+      })
+  );
 });
 
-async function networkFirst(request) {
-  try {
-    const networkResponse = await fetch(request);
-    if (networkResponse.ok) {
-      const cache = await caches.open(RUNTIME_CACHE);
-      cache.put(request, networkResponse.clone());
-      await purgeOldEntries(cache);
-    }
-    return networkResponse;
-  } catch {
-    // Network failed — fall back to cache
-    const cached = await caches.match(request);
-    if (cached) return cached;
+// ============================================================
+// MENSAJES — Sincronización y notificaciones
+// ============================================================
 
-    // Final fallback for navigation requests
-    if (request.destination === 'document') {
-      const staticCache = await caches.open(STATIC_CACHE);
-      return (await staticCache.match('/index.html')) || new Response('Offline', { status: 503 });
-    }
-    return new Response('Network error', { status: 503 });
-  }
-}
-
-// ---- Purge old runtime cache entries ---------------------------------------
-async function purgeOldEntries(cache) {
-  const requests = await cache.keys();
-  const now = Date.now();
-
-  // Purge by count (keep last MAX_RUNTIME_ENTRIES)
-  if (requests.length > MAX_RUNTIME_ENTRIES) {
-    const toDelete = requests.slice(0, requests.length - MAX_RUNTIME_ENTRIES);
-    await Promise.all(toDelete.map((r) => cache.delete(r)));
-  }
-
-  // Purge by age
-  for (const req of requests) {
-    const res = await cache.match(req);
-    if (!res) continue;
-    const dateHeader = res.headers.get('date');
-    if (!dateHeader) continue;
-    const cacheDate = new Date(dateHeader).getTime();
-    if (now - cacheDate > MAX_CACHE_AGE_MS) await cache.delete(req);
-  }
-}
-
-// ---- Skip waiting ----------------------------------------------------------
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+
+  if (event.data && event.data.type === 'CLEAR_CACHE') {
+    caches.delete(CACHE_NAME);
+    caches.delete(RUNTIME_CACHE);
+    event.ports[0].postMessage({ success: true });
+  }
 });
+
+// ============================================================
+// SYNC — Sincronización en segundo plano (cuando vuelva internet)
+// ============================================================
+
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'sync-evolis') {
+    event.waitUntil(syncEvolisEvents());
+  }
+});
+
+async function syncEvolisEvents() {
+  try {
+    // Aquí se sincronizarían los eventos de EVOLIS pendientes
+    // con el servidor cuando vuelva la conexión
+    console.log('[SW] Sincronizando eventos EVOLIS...');
+    // const client = await clients.openWindow('/');
+    // client.postMessage({ type: 'SYNC_EVOLIS' });
+  } catch (error) {
+    console.error('[SW] Error al sincronizar EVOLIS:', error);
+  }
+}
+
+// ============================================================
+// PUSH — Notificaciones push
+// ============================================================
+
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+
+  try {
+    const data = event.data.json();
+    const options = {
+      body: data.body || 'Sentra Visión alerta',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      vibrate: [200, 100, 200],
+      data: data.data || {},
+      actions: [
+        { action: 'open', title: 'Abrir' },
+        { action: 'dismiss', title: 'Cerrar' }
+      ]
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(
+        data.title || 'Sentra Visión',
+        options
+      )
+    );
+  } catch (error) {
+    console.error('[SW] Error al mostrar notificación:', error);
+  }
+});
+
+// ============================================================
+// NOTIFICATION CLICK — Manejo de clics en notificaciones
+// ============================================================
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  if (event.action === 'dismiss') {
+    return;
+  }
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then((windowClients) => {
+        // Si ya hay una ventana abierta, enfocarla
+        for (const client of windowClients) {
+          if (client.url === '/' && 'focus' in client) {
+            return client.focus();
+          }
+        }
+        // Si no, abrir una nueva
+        if (clients.openWindow) {
+          return clients.openWindow('/');
+        }
+      })
+  );
+});
+
+// ============================================================
+// LOG DE INICIO
+// ============================================================
+
+console.log('[SW] Sentra Vision Service Worker v3.1.2-PROT');
+console.log('[SW] Offline-first — Cuando todo lo demás se apaga, Sentra Core sigue ahí.');
