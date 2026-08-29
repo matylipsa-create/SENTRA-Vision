@@ -1,18 +1,27 @@
 // src/core/EVOLIS.ts
 // Sistema de registro de eventos con hash chain (Dilithium)
 // Trazabilidad inalterable para Sentra Core
+// Integra crypto helpers y estadísticas desglosadas
 
-import { simpleHash } from '../lib/crypto';
-import { MoralDecision } from './MoralNode';
+import { sha256, generateUUID, validateHashChain, getGenesisHash } from '../lib/crypto';
+
+// ============================================================
+// 1. TIPOS E INTERFACES
+// ============================================================
 
 export interface EventRecord {
   id: string;
-  type: 'DETECTION' | 'ACTION' | 'DECISION' | 'ERROR' | 'ALERT';
+  type: 'DETECTION' | 'ACTION' | 'DECISION' | 'ERROR' | 'ALERT' | 'HEALTH';
   timestamp: number;
   data: any;
-  moralDecision?: MoralDecision;
+  moralDecision?: {
+    allowed: boolean;
+    reason?: string;
+    rulesApplied: string[];
+  };
   previousHash: string;
   hash: string;
+  signature?: string; // Dilithium signature (opcional)
 }
 
 export interface EVOLISStats {
@@ -20,20 +29,39 @@ export interface EVOLISStats {
   chainVerified: boolean;
   firstEvent: EventRecord | null;
   lastEvent: EventRecord | null;
-  typeBreakdown: Record<string, number>;
+  eventsByType: Record<string, number>;
+  averageEventRate: number; // eventos por minuto
+  totalTimeSpan: number; // ms entre primer y último evento
 }
 
-/**
- * EVOLIS — Sistema de hash chain para trazabilidad inalterable.
- * Singleton pattern con métodos de verificación y estadísticas.
- */
+export interface EVOLISExportData {
+  version: string;
+  exportedAt: number;
+  chain: EventRecord[];
+  stats: EVOLISStats;
+  metadata: {
+    genesisHash: string;
+    totalEvents: number;
+    chainVerified: boolean;
+  };
+}
+
+// ============================================================
+// 2. CLASE PRINCIPAL
+// ============================================================
+
 export class EVOLIS {
   private static instance: EVOLIS;
   private chain: EventRecord[] = [];
-  private currentHash: string = 'GENESIS_BLOCK';
-  private maxChainSize: number = 1000;
+  private currentHash: string = getGenesisHash();
+  private maxChainSize: number = 10000;
+  private isInitialized: boolean = false;
+  private eventTimestamps: number[] = [];
 
-  private constructor() {}
+  private constructor() {
+    this.isInitialized = true;
+    console.log('[EVOLIS] Inicializado con hash génesis:', this.currentHash);
+  }
 
   public static getInstance(): EVOLIS {
     if (!EVOLIS.instance) {
@@ -42,18 +70,29 @@ export class EVOLIS {
     return EVOLIS.instance;
   }
 
-  /**
-   * Registra un evento en la cadena con hash.
-   */
+  // ============================================================
+  // 3. REGISTRO DE EVENTOS
+  // ============================================================
+
   public registerEvent(
     type: EventRecord['type'],
     data: any,
-    moralDecision?: MoralDecision
+    moralDecision?: EventRecord['moralDecision']
   ): EventRecord {
-    const id = this.generateId();
+    const id = generateUUID();
     const timestamp = Date.now();
     const previousHash = this.currentHash;
-    
+
+    // Preparar el payload para el hash
+    const payload = {
+      id,
+      type,
+      timestamp,
+      data,
+      moralDecision,
+      previousHash
+    };
+
     const record: EventRecord = {
       id,
       type,
@@ -61,150 +100,219 @@ export class EVOLIS {
       data,
       moralDecision,
       previousHash,
-      hash: ''
+      hash: sha256(JSON.stringify(payload))
     };
 
-    record.hash = this.calculateHash(record);
+    // Actualizar estado
     this.currentHash = record.hash;
     this.chain.push(record);
+    this.eventTimestamps.push(timestamp);
 
+    // Mantener tamaño limitado
     if (this.chain.length > this.maxChainSize) {
       this.chain = this.chain.slice(-this.maxChainSize);
+      this.eventTimestamps = this.eventTimestamps.slice(-this.maxChainSize);
+    }
+
+    // Log de evento (solo en desarrollo)
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[EVOLIS] Evento registrado: ${type} (${id})`);
     }
 
     return record;
   }
 
-  /**
-   * Calcula el hash de un registro usando simpleHash.
-   */
-  private calculateHash(record: Omit<EventRecord, 'hash'>): string {
-    const data = `${record.id}|${record.type}|${record.timestamp}|${JSON.stringify(record.data)}|${record.previousHash}`;
-    return simpleHash(data);
-  }
+  // ============================================================
+  // 4. CONSULTAS
+  // ============================================================
 
-  /**
-   * Genera un ID único para el evento.
-   */
-  private generateId(): string {
-    return `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  }
-
-  /**
-   * Retorna toda la cadena de eventos.
-   */
   public getChain(): EventRecord[] {
     return [...this.chain];
   }
 
-  /**
-   * Retorna el último evento registrado.
-   */
   public getLastEvent(): EventRecord | null {
-    return this.chain[this.chain.length - 1] || null;
+    return this.chain.length > 0 ? this.chain[this.chain.length - 1] : null;
   }
 
-  /**
-   * Filtra eventos por tipo.
-   */
+  public getFirstEvent(): EventRecord | null {
+    return this.chain.length > 0 ? this.chain[0] : null;
+  }
+
   public getEventsByType(type: EventRecord['type']): EventRecord[] {
-    return this.chain.filter(evt => evt.type === type);
+    return this.chain.filter(event => event.type === type);
   }
 
-  /**
-   * Filtra eventos en un rango de tiempo.
-   */
   public getEventsInRange(startTime: number, endTime: number): EventRecord[] {
-    return this.chain.filter(evt => evt.timestamp >= startTime && evt.timestamp <= endTime);
+    return this.chain.filter(
+      event => event.timestamp >= startTime && event.timestamp <= endTime
+    );
   }
 
-  /**
-   * Verifica la integridad de toda la cadena.
-   */
+  public getEventById(id: string): EventRecord | null {
+    return this.chain.find(event => event.id === id) || null;
+  }
+
+  public getCurrentHash(): string {
+    return this.currentHash;
+  }
+
+  public getChainLength(): number {
+    return this.chain.length;
+  }
+
+  // ============================================================
+  // 5. VERIFICACIÓN DE INTEGRIDAD
+  // ============================================================
+
   public verifyChain(): boolean {
-    if (this.chain.length === 0) return true;
-    
-    for (let i = 1; i < this.chain.length; i++) {
-      const current = this.chain[i];
-      const previous = this.chain[i - 1];
-      
-      if (current.previousHash !== previous.hash) {
-        console.error(`[EVOLIS] Cadena rota en índice ${i}`);
-        return false;
-      }
-      
-      const { hash, ...recordWithoutHash } = current;
-      const calculatedHash = this.calculateHash(recordWithoutHash as any);
-      if (calculatedHash !== current.hash) {
-        console.error(`[EVOLIS] Hash inválido en índice ${i}`);
-        return false;
-      }
-    }
-    
-    return true;
+    return validateHashChain(this.chain);
   }
 
-  /**
-   * Retorna estadísticas de la cadena.
-   */
+  public verifyEventIntegrity(event: EventRecord): boolean {
+    const { hash, ...recordWithoutHash } = event;
+    const calculatedHash = sha256(JSON.stringify(recordWithoutHash));
+    return calculatedHash === event.hash;
+  }
+
+  // ============================================================
+  // 6. ESTADÍSTICAS
+  // ============================================================
+
   public getStats(): EVOLISStats {
     const verified = this.verifyChain();
-    const typeBreakdown: Record<string, number> = {};
-    
-    for (const event of this.chain) {
-      typeBreakdown[event.type] = (typeBreakdown[event.type] || 0) + 1;
-    }
+    const eventsByType: Record<string, number> = {};
+
+    this.chain.forEach(event => {
+      eventsByType[event.type] = (eventsByType[event.type] || 0) + 1;
+    });
+
+    const firstEvent = this.getFirstEvent();
+    const lastEvent = this.getLastEvent();
+    const totalTimeSpan = lastEvent && firstEvent 
+      ? lastEvent.timestamp - firstEvent.timestamp 
+      : 0;
+
+    const averageEventRate = totalTimeSpan > 0 
+      ? (this.chain.length / (totalTimeSpan / 60000)) // eventos por minuto
+      : 0;
 
     return {
       totalEvents: this.chain.length,
       chainVerified: verified,
-      firstEvent: this.chain[0] || null,
-      lastEvent: this.chain[this.chain.length - 1] || null,
-      typeBreakdown
+      firstEvent,
+      lastEvent,
+      eventsByType,
+      averageEventRate: Math.round(averageEventRate * 100) / 100,
+      totalTimeSpan
     };
   }
 
-  /**
-   * Limpia toda la cadena.
-   */
-  public clearChain(): void {
-    this.chain = [];
-    this.currentHash = 'GENESIS_BLOCK';
+  // ============================================================
+  // 7. EXPORTACIÓN E IMPORTACIÓN
+  // ============================================================
+
+  public exportChain(): EVOLISExportData {
+    const stats = this.getStats();
+    return {
+      version: '1.0.0',
+      exportedAt: Date.now(),
+      chain: this.getChain(),
+      stats,
+      metadata: {
+        genesisHash: getGenesisHash(),
+        totalEvents: this.chain.length,
+        chainVerified: stats.chainVerified
+      }
+    };
   }
 
-  /**
-   * Configura el tamaño máximo de la cadena.
-   */
+  public importChain(data: EVOLISExportData): boolean {
+    try {
+      // Verificar que la cadena importada es válida
+      const isValid = validateHashChain(data.chain);
+      if (!isValid) {
+        console.error('[EVOLIS] Cadena importada inválida');
+        return false;
+      }
+
+      this.chain = data.chain;
+      this.currentHash = this.chain.length > 0 
+        ? this.chain[this.chain.length - 1].hash 
+        : getGenesisHash();
+      this.eventTimestamps = this.chain.map(event => event.timestamp);
+
+      console.log(`[EVOLIS] Cadena importada: ${this.chain.length} eventos`);
+      return true;
+    } catch (error) {
+      console.error('[EVOLIS] Error al importar cadena:', error);
+      return false;
+    }
+  }
+
+  // ============================================================
+  // 8. GESTIÓN DE LA CADENA
+  // ============================================================
+
+  public clearChain(): void {
+    this.chain = [];
+    this.currentHash = getGenesisHash();
+    this.eventTimestamps = [];
+    console.log('[EVOLIS] Cadena limpiada');
+  }
+
   public setMaxChainSize(size: number): void {
     this.maxChainSize = size;
     if (this.chain.length > this.maxChainSize) {
       this.chain = this.chain.slice(-this.maxChainSize);
+      this.eventTimestamps = this.eventTimestamps.slice(-this.maxChainSize);
     }
   }
 
-  /**
-   * Exporta la cadena en formato JSON.
-   */
-  public exportChain(): string {
-    return JSON.stringify(this.chain);
+  public pruneChain(maxSize: number): number {
+    if (this.chain.length <= maxSize) return 0;
+    const removed = this.chain.length - maxSize;
+    this.chain = this.chain.slice(-maxSize);
+    this.eventTimestamps = this.eventTimestamps.slice(-maxSize);
+    this.currentHash = this.chain.length > 0 
+      ? this.chain[this.chain.length - 1].hash 
+      : getGenesisHash();
+    return removed;
   }
 
-  /**
-   * Importa una cadena desde JSON.
-   */
-  public importChain(json: string): boolean {
-    try {
-      this.chain = JSON.parse(json);
-      if (this.chain.length > 0) {
-        this.currentHash = this.chain[this.chain.length - 1].hash;
-      }
-      return this.verifyChain();
-    } catch (error) {
-      console.error('[EVOLIS] Error importando cadena:', error);
-      return false;
-    }
+  // ============================================================
+  // 9. FORMATO LEGIBLE
+  // ============================================================
+
+  public formatChainForDisplay(): string {
+    return this.chain.map(event => 
+      `[${new Date(event.timestamp).toISOString()}] ${event.type} | ${event.hash.slice(0, 10)}... → ${event.previousHash.slice(0, 10)}...`
+    ).join('\n');
+  }
+
+  public getChainSummary(): string {
+    const stats = this.getStats();
+    return [
+      '=== EVOLIS CHAIN SUMMARY ===',
+      `Total events: ${stats.totalEvents}`,
+      `Chain verified: ${stats.chainVerified ? '✅ Yes' : '❌ No'}`,
+      `Genesis hash: ${getGenesisHash()}`,
+      `Current hash: ${this.currentHash}`,
+      `Events by type:`,
+      ...Object.entries(stats.eventsByType).map(([type, count]) => `  ${type}: ${count}`),
+      `Average event rate: ${stats.averageEventRate}/min`,
+      `Time span: ${stats.totalTimeSpan > 0 ? `${(stats.totalTimeSpan / 60000).toFixed(1)} min` : 'N/A'}`
+    ].join('\n');
   }
 }
 
-// Exportar instancia singleton
+// ============================================================
+// 10. INSTANCIA POR DEFECTO
+// ============================================================
+
 export const evolis = EVOLIS.getInstance();
+
+// ============================================================
+// 11. EXPORTACIÓN POR DEFECTO
+// ============================================================
+
+export default evolis;
