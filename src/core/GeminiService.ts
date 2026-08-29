@@ -1,23 +1,42 @@
-// src/services/GeminiService.ts
+// src/core/GeminiService.ts
 // Servicio de Gemini con fallback local (mock)
 // Soberanía del dato: si no hay API key, usa respuestas locales
 
-import { TCREIInput, TCREIOutput, tcreiBridge } from '../core/TCREIBridge';
+import { TCREIInput, tcreiBridge, TCREIPrompt } from './TCREIBridge';
+import { generateUUID } from '../lib/crypto';
 
-interface GeminiResponse {
+// ============================================================
+// 1. TIPOS E INTERFACES
+// ============================================================
+
+export interface GeminiResponse {
   text: string;
   isMock: boolean;
   timestamp: number;
   processingTime?: number;
+  id?: string;
 }
 
-interface GeminiConfig {
+export interface GeminiConfig {
   apiKey?: string;
   model?: string;
   temperature?: number;
   maxTokens?: number;
   useMock?: boolean;
+  timeout?: number;
 }
+
+export interface GeminiStatus {
+  useMock: boolean;
+  hasApiKey: boolean;
+  model: string;
+  isInitialized: boolean;
+  lastError?: string;
+}
+
+// ============================================================
+// 2. CLASE PRINCIPAL
+// ============================================================
 
 export class GeminiService {
   private static instance: GeminiService;
@@ -26,9 +45,9 @@ export class GeminiService {
   private model: string = 'gemini-1.5-flash';
   private temperature: number = 0.7;
   private maxTokens: number = 150;
+  private timeout: number = 10000;
   private isInitialized: boolean = false;
-  
-  // Respuestas de fallback local (soberanía del dato)
+  private lastError: string | null = null;
   private mockResponses: string[] = [
     'Entendido. El entorno parece seguro.',
     'He analizado la escena. No hay peligros inmediatos.',
@@ -59,23 +78,34 @@ export class GeminiService {
     return GeminiService.instance;
   }
 
+  // ============================================================
+  // 3. GENERACIÓN DE RESPUESTAS
+  // ============================================================
+
   public async generateResponse(input: TCREIInput): Promise<GeminiResponse> {
+    const id = generateUUID();
     const startTime = performance.now();
     const prompt = tcreiBridge.generatePrompt(input);
 
+    // Si estamos en modo mock o no hay API key
     if (this.useMock || !this.apiKey) {
-      return this.mockResponse(prompt, startTime);
+      return this.mockResponse(prompt, startTime, id);
     }
 
     try {
-      return await this.realGeminiCall(prompt, startTime);
+      return await this.realGeminiCall(prompt, startTime, id);
     } catch (error) {
       console.error('[GeminiService] Error en llamada real, usando mock:', error);
-      return this.mockResponse(prompt, startTime);
+      this.lastError = error instanceof Error ? error.message : 'Unknown error';
+      return this.mockResponse(prompt, startTime, id);
     }
   }
 
-  private async realGeminiCall(prompt: TCREIOutput, startTime: number): Promise<GeminiResponse> {
+  private async realGeminiCall(
+    prompt: TCREIPrompt,
+    startTime: number,
+    id: string
+  ): Promise<GeminiResponse> {
     if (!this.apiKey) {
       throw new Error('API key no configurada');
     }
@@ -118,38 +148,55 @@ export class GeminiService {
       ]
     };
 
-    const response = await fetch(`${url}?key=${this.apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
-    });
+    // Timeout control
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
+    try {
+      const response = await fetch(`${url}?key=${this.apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
+      }
+
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text ||
+                    prompt.structuredData.shortPhrase;
+
+      const processingTime = performance.now() - startTime;
+
+      return {
+        id,
+        text,
+        isMock: false,
+        timestamp: Date.now(),
+        processingTime
+      };
+    } catch (error) {
+      clearTimeout(timeoutId);
+      throw error;
     }
-
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 
-                  prompt.structuredData.shortPhrase;
-
-    const processingTime = performance.now() - startTime;
-
-    return {
-      text,
-      isMock: false,
-      timestamp: Date.now(),
-      processingTime
-    };
   }
 
-  private mockResponse(prompt: TCREIOutput, startTime: number): GeminiResponse {
+  private mockResponse(
+    prompt: TCREIPrompt,
+    startTime: number,
+    id: string
+  ): GeminiResponse {
     // Seleccionar respuesta aleatoria de las locales
     const randomIndex = Math.floor(Math.random() * this.mockResponses.length);
     let text = this.mockResponses[randomIndex];
-    
+
     // Si hay una frase corta en el prompt, usarla como complemento
     if (prompt.structuredData.shortPhrase) {
       text = `${text} ${prompt.structuredData.shortPhrase}`;
@@ -168,6 +215,7 @@ export class GeminiService {
     const processingTime = performance.now() - startTime;
 
     return {
+      id,
       text,
       isMock: true,
       timestamp: Date.now(),
@@ -175,9 +223,14 @@ export class GeminiService {
     };
   }
 
+  // ============================================================
+  // 4. CONFIGURACIÓN
+  // ============================================================
+
   public setApiKey(key: string): void {
     this.apiKey = key;
     this.useMock = false;
+    this.lastError = null;
     console.log('[GeminiService] API key actualizada, modo real activado');
   }
 
@@ -185,29 +238,38 @@ export class GeminiService {
     if (config.apiKey) {
       this.apiKey = config.apiKey;
       this.useMock = false;
+      this.lastError = null;
     }
     if (config.model) this.model = config.model;
     if (config.temperature !== undefined) this.temperature = config.temperature;
     if (config.maxTokens !== undefined) this.maxTokens = config.maxTokens;
     if (config.useMock !== undefined) this.useMock = config.useMock;
+    if (config.timeout !== undefined) this.timeout = config.timeout;
+    console.log('[GeminiService] Configuración actualizada');
   }
 
-  public getStatus(): { 
-    useMock: boolean; 
-    hasApiKey: boolean; 
-    model: string;
-    isInitialized: boolean;
-  } {
+  public getStatus(): GeminiStatus {
     return {
       useMock: this.useMock,
       hasApiKey: !!this.apiKey,
       model: this.model,
-      isInitialized: this.isInitialized
+      isInitialized: this.isInitialized,
+      lastError: this.lastError || undefined
     };
   }
 
+  // ============================================================
+  // 5. GESTIÓN DE RESPUESTAS MOCK
+  // ============================================================
+
   public addMockResponse(response: string): void {
     this.mockResponses.push(response);
+  }
+
+  public removeMockResponse(index: number): void {
+    if (index >= 0 && index < this.mockResponses.length) {
+      this.mockResponses.splice(index, 1);
+    }
   }
 
   public clearMockResponses(): void {
@@ -226,6 +288,60 @@ export class GeminiService {
       'Detección confirmada. Sin alertas pendientes.'
     ];
   }
+
+  public getMockResponses(): string[] {
+    return [...this.mockResponses];
+  }
+
+  // ============================================================
+  // 6. FUNCIONES AUXILIARES
+  // ============================================================
+
+  public async generateContextualResponse(
+    detections: Array<{ label: string; confidence: number }>,
+    context?: string
+  ): Promise<GeminiResponse> {
+    const input: TCREIInput = {
+      type: 'CONTEXT',
+      detectedObjects: detections,
+      context: context || 'Entorno general',
+      priority: detections.some(d => ['knife', 'gun', 'weapon'].includes(d.label)) ? 'CRITICAL' : 'MEDIUM'
+    };
+    return this.generateResponse(input);
+  }
+
+  public async generateAlertResponse(
+    message: string,
+    priority: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' = 'MEDIUM'
+  ): Promise<GeminiResponse> {
+    const input: TCREIInput = {
+      type: 'ALERT',
+      context: message,
+      priority
+    };
+    return this.generateResponse(input);
+  }
+
+  // ============================================================
+  // 7. RESET
+  // ============================================================
+
+  public reset(): void {
+    this.apiKey = import.meta.env.VITE_GEMINI_API_KEY || null;
+    this.useMock = !this.apiKey;
+    this.lastError = null;
+    console.log('[GeminiService] Reset completado');
+  }
 }
 
+// ============================================================
+// 8. INSTANCIA POR DEFECTO
+// ============================================================
+
 export const geminiService = GeminiService.getInstance();
+
+// ============================================================
+// 9. EXPORTACIÓN POR DEFECTO
+// ============================================================
+
+export default geminiService;
