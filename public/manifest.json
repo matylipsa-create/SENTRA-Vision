@@ -1,17 +1,15 @@
 {
   "name": "Sentra Visión",
   "short_name": "SentraV",
-  "description": "Asistencia visual cognitiva — Escudo y Espada",
+  "description": "Asistencia visual soberana para personas ciegas — IA local, offline-first, con veto humano y trazabilidad inalterable.",
   "start_url": "/",
-  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#0a0a0f",
   "theme_color": "#00d4ff",
-  "orientation": "portrait",
+  "categories": ["accessibility", "assistive technology", "artificial intelligence", "productivity"],
   "lang": "es",
   "dir": "ltr",
-  "prefer_related_applications": false,
-  "categories": ["utilities", "productivity", "accessibility"],
   "icons": [
     {
       "src": "/icon-192.png",
@@ -26,6 +24,55 @@
       "purpose": "any maskable"
     }
   ],
-  "screenshots": [],
-  "related_applications": []
+  "screenshots": [
+    {
+      "src": "/screenshot-1.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Pantalla principal con botón ACTIVAR"
+    },
+    {
+      "src": "/screenshot-2.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Indicadores de ética y trazabilidad activos"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Iniciar Visión",
+      "short_name": "Iniciar",
+      "description": "Activar la cámara y la detección de objetos",
+      "url": "/?mode=vision",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Configuración",
+      "short_name": "Config",
+      "description": "Ajustes de accesibilidad y preferencias",
+      "url": "/settings"
+    }
+  ],
+  "permissions": [
+    "camera",
+    "microphone",
+    "storage"
+  ],
+  "features": [
+    "cross-platform",
+    "touch",
+    "speech-synthesis",
+    "vibration"
+  ],
+  "related_applications": [],
+  "prefer_related_applications": false,
+  "scope": "/",
+  "display_override": ["standalone", "window-controls-overlay"]
 }
