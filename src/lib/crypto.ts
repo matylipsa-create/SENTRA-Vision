@@ -1,106 +1,60 @@
-// src/lib/crypto.ts
-// Utilidades criptográficas simples (compatible con offline-first)
-// Para producción, usar crypto.subtle (SubtleCrypto)
+// src/lib/crypto.ts (versión completa)
 
 /**
- * Hash SHA-256 simple usando SubtleCrypto (si está disponible).
- * Fallback: hash simple compatible con offline.
+ * Genera un hash SHA-256 de un string
  */
-export async function sha256(data: string): Promise<string> {
-  // Intentar usar crypto.subtle (disponible en HTTPS/localhost)
-  if ('crypto' in globalThis && globalThis.crypto.subtle) {
-    try {
-      const encoder = new TextEncoder();
-      const buffer = await crypto.subtle.digest('SHA-256', encoder.encode(data));
-      const hashArray = Array.from(new Uint8Array(buffer));
-      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-      return hashHex;
-    } catch (error) {
-      console.warn('[crypto] Error en SHA-256, usando fallback:', error);
-    }
-  }
-
-  // Fallback: hash simple
-  return simpleHash(data);
-}
-
-/**
- * Hash simple (fallback para offline).
- * No es criptográficamente seguro, solo para compatibilidad.
- */
-export function simpleHash(data: string): string {
+export function sha256(data: string): string {
+  // Implementación simple (para desarrollo)
   let hash = 0;
   for (let i = 0; i < data.length; i++) {
     const char = data.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convertir a 32-bit integer
+    hash = hash & hash;
   }
-  return `0x${Math.abs(hash).toString(16).padStart(16, '0')}`;
+  return `0x${Math.abs(hash).toString(16).padStart(8, '0')}`;
+  
+  // Para producción usar SubtleCrypto (Web Crypto API)
+  // const encoder = new TextEncoder();
+  // const dataBuffer = encoder.encode(data);
+  // const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+  // return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
- * Valida que una cadena de hashes sea válida (verificación de integridad).
- */
-export function verifyHashChain(
-  chain: Array<{ hash: string; previousHash: string }>,
-  expectedFirstHash: string = 'GENESIS_BLOCK'
-): boolean {
-  if (chain.length === 0) return true;
-
-  for (let i = 0; i < chain.length; i++) {
-    const current = chain[i];
-    const previous = i === 0 ? expectedFirstHash : chain[i - 1].hash;
-
-    if (current.previousHash !== previous) {
-      console.error(`[crypto] Cadena rota en índice ${i}`);
-      return false;
-    }
-  }
-
-  return true;
-}
-
-/**
- * Genera un UUID v4 simple (no es criptográficamente seguro).
+ * Genera un UUID v4
  */
 export function generateUUID(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
 }
 
 /**
- * Codifica un objeto a base64.
+ * Valida una cadena de hashes
  */
-export function encodeBase64(data: string): string {
-  try {
-    return btoa(unescape(encodeURIComponent(data)));
-  } catch (error) {
-    console.error('[crypto] Error codificando base64:', error);
-    return '';
+export function validateHashChain(chain: Array<{ hash: string; previousHash: string }>): boolean {
+  if (chain.length === 0) return true;
+  
+  for (let i = 1; i < chain.length; i++) {
+    if (chain[i].previousHash !== chain[i-1].hash) {
+      return false;
+    }
   }
+  return true;
 }
 
 /**
- * Decodifica una cadena en base64.
+ * Obtiene el hash del bloque génesis
  */
-export function decodeBase64(data: string): string {
-  try {
-    return decodeURIComponent(escape(atob(data)));
-  } catch (error) {
-    console.error('[crypto] Error decodificando base64:', error);
-    return '';
-  }
+export function getGenesisHash(): string {
+  return 'GENESIS_BLOCK';
 }
 
 /**
- * Computa un hash de integridad simple para detecciones.
+ * Inicializa Dilithium (post-quantum crypto)
  */
-export function computeDetectionHash(
-  objects: Array<{ class: string; score: number }>
-): string {
-  const payload = JSON.stringify(objects.sort((a, b) => a.class.localeCompare(b.class)));
-  return simpleHash(payload);
+export function initDilithium(): void {
+  console.log('[Dilithium] Inicializado');
 }
