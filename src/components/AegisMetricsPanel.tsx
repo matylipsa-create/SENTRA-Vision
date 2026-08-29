@@ -1,175 +1,347 @@
-import { X, Shield, Cpu, Radio, Activity, Database, Layers, Send, Zap, BatteryLow, Camera, Mic } from 'lucide-react';
-import { useApp } from '../context/AppContext';
-import type { ModuleState, CameraState } from '../types';
+// src/components/AegisMetricsPanel.tsx
+// Panel de métricas del sistema — Monitoreo de Sentra Core
+// Muestra estadísticas de EVOLIS, MoralNode, percepción y rendimiento
 
-interface Props {
-  open: boolean;
-  onClose: () => void;
+import React, { useState, useEffect, useRef } from 'react';
+import { evolis } from '../core/EVOLIS';
+import { moralNode } from '../core/MoralNode';
+import { geminiService } from '../services/GeminiService';
+
+// ============================================================
+// 1. TIPOS E INTERFACES
+// ============================================================
+
+interface AegisMetrics {
+  evolis: {
+    chainLength: number;
+    chainVerified: boolean;
+    lastEvent: string | null;
+    eventsByType: Record<string, number>;
+  };
+  moral: {
+    totalDecisions: number;
+    vetoedActions: number;
+    allowedActions: number;
+    lastDecision: string | null;
+  };
+  perception: {
+    fps: number;
+    detectionsPerSecond: number;
+    modelLoaded: boolean;
+    currentObjects: string[];
+  };
+  system: {
+    uptime: number;
+    memoryUsage: number;
+    batteryLevel: number;
+    networkStatus: 'online' | 'offline' | 'unknown';
+  };
+  gemini: {
+    useMock: boolean;
+    hasApiKey: boolean;
+    model: string;
+  };
 }
 
-const MODULE_ICONS: Record<string, typeof Shield> = {
-  CAM: Radio, AUDIO: Activity, GPS: Shield, IA: Cpu, IDB: Database, FIFO: Layers,
-};
+interface AegisMetricsPanelProps {
+  refreshInterval?: number; // ms
+  onError?: (error: Error) => void;
+  compact?: boolean;
+}
 
-function ModuleRow({ mod }: { mod: ModuleState }) {
-  const Icon = MODULE_ICONS[mod.key] || Shield;
-  return (
-    <div className="flex items-center justify-between py-2 px-3 rounded-lg"
-      style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-      <div className="flex items-center gap-2">
-        <Icon size={16} style={{ color: mod.active ? '#FBBF24' : '#9CA3AF' }} aria-hidden="true" />
-        <span className="text-sm font-medium" style={{ color: '#E5E7EB' }}>{mod.label}</span>
+// ============================================================
+// 2. COMPONENTE PRINCIPAL
+// ============================================================
+
+export const AegisMetricsPanel: React.FC<AegisMetricsPanelProps> = ({
+  refreshInterval = 5000,
+  onError,
+  compact = false
+}) => {
+  const [metrics, setMetrics] = useState<AegisMetrics | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // ============================================================
+  // 3. RECOLECCIÓN DE MÉTRICAS
+  // ============================================================
+
+  const collectMetrics = (): AegisMetrics => {
+    const chain = evolis.getChain();
+    const moralLog = moralNode.getLog();
+
+    // Contar eventos por tipo
+    const eventsByType: Record<string, number> = {};
+    chain.forEach(event => {
+      eventsByType[event.type] = (eventsByType[event.type] || 0) + 1;
+    });
+
+    // Contar decisiones de MoralNode
+    let vetoed = 0;
+    let allowed = 0;
+    moralLog.forEach(decision => {
+      if (decision.allowed) {
+        allowed++;
+      } else {
+        vetoed++;
+      }
+    });
+
+    const geminiStatus = geminiService.getStatus();
+
+    return {
+      evolis: {
+        chainLength: chain.length,
+        chainVerified: evolis.verifyChain(),
+        lastEvent: chain.length > 0 ? chain[chain.length - 1].type : null,
+        eventsByType
+      },
+      moral: {
+        totalDecisions: moralLog.length,
+        vetoedActions: vetoed,
+        allowedActions: allowed,
+        lastDecision: moralLog.length > 0 
+          ? moralLog[moralLog.length - 1].allowed ? 'Permitida' : 'Vetada'
+          : null
+      },
+      perception: {
+        fps: 0, // Se actualizará desde el hook
+        detectionsPerSecond: 0,
+        modelLoaded: false,
+        currentObjects: []
+      },
+      system: {
+        uptime: Math.floor(performance.now() / 1000),
+        memoryUsage: 0,
+        batteryLevel: 0,
+        networkStatus: navigator.onLine ? 'online' : 'offline'
+      },
+      gemini: {
+        useMock: geminiStatus.useMock,
+        hasApiKey: geminiStatus.hasApiKey,
+        model: geminiStatus.model
+      }
+    };
+  };
+
+  // ============================================================
+  // 4. ACTUALIZACIÓN
+  // ============================================================
+
+  const updateMetrics = () => {
+    try {
+      const newMetrics = collectMetrics();
+      setMetrics(newMetrics);
+      setError(null);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Error al recolectar métricas';
+      setError(errorMsg);
+      if (onError && err instanceof Error) {
+        onError(err);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // ============================================================
+  // 5. EFECTOS
+  // ============================================================
+
+  useEffect(() => {
+    updateMetrics();
+
+    intervalRef.current = setInterval(updateMetrics, refreshInterval);
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, [refreshInterval]);
+
+  // ============================================================
+  // 6. RENDER
+  // ============================================================
+
+  if (isLoading) {
+    return (
+      <div className="aegis-metrics-panel loading">
+        <div className="loading-spinner" />
+        <p>Cargando métricas...</p>
       </div>
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-mono" style={{ color: mod.loaded ? '#9CA3AF' : '#F87171' }}>
-          {mod.loaded ? 'LOADED' : 'LAZY'}
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="aegis-metrics-panel error">
+        <span className="error-icon">⚠️</span>
+        <p className="error-text">{error}</p>
+        <button onClick={updateMetrics}>Reintentar</button>
+      </div>
+    );
+  }
+
+  if (!metrics) {
+    return (
+      <div className="aegis-metrics-panel empty">
+        <p>No hay métricas disponibles</p>
+      </div>
+    );
+  }
+
+  // ============================================================
+  // 7. VISTA COMPACTA
+  // ============================================================
+
+  if (compact) {
+    return (
+      <div className="aegis-metrics-panel compact">
+        <div className="metrics-grid compact">
+          <div className="metric-item">
+            <span className="metric-label">EVOLIS</span>
+            <span className="metric-value">{metrics.evolis.chainLength}</span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Vetos</span>
+            <span className="metric-value">{metrics.moral.vetoedActions}</span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Cadena</span>
+            <span className={`metric-value ${metrics.evolis.chainVerified ? 'valid' : 'invalid'}`}>
+              {metrics.evolis.chainVerified ? '✅' : '❌'}
+            </span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Red</span>
+            <span className={`metric-value ${metrics.system.networkStatus === 'online' ? 'online' : 'offline'}`}>
+              {metrics.system.networkStatus === 'online' ? '📶' : '📴'}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================
+  // 8. VISTA COMPLETA
+  // ============================================================
+
+  return (
+    <div className="aegis-metrics-panel full">
+      <div className="panel-header">
+        <h2>🛡️ Sentra Core — Métricas del Sistema</h2>
+        <span className="last-update">
+          Actualizado: {new Date().toLocaleTimeString()}
         </span>
-        <span className="w-2 h-2 rounded-full" role="img" aria-label={mod.active ? 'Activo' : 'Inactivo'} style={{
-          background: mod.active ? '#22C55E' : '#EF4444',
-          boxShadow: mod.active ? '0 0 8px rgba(34,197,94,0.6)' : '0 0 8px rgba(239,68,68,0.6)',
-        }} />
+      </div>
+
+      <div className="metrics-grid full">
+        {/* EVOLIS */}
+        <div className="metrics-section">
+          <h3>🔗 EVOLIS — Trazabilidad</h3>
+          <div className="metric-item">
+            <span className="metric-label">Eventos registrados</span>
+            <span className="metric-value">{metrics.evolis.chainLength}</span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Cadena verificada</span>
+            <span className={`metric-value ${metrics.evolis.chainVerified ? 'valid' : 'invalid'}`}>
+              {metrics.evolis.chainVerified ? '✅ Verificada' : '❌ No verificada'}
+            </span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Último evento</span>
+            <span className="metric-value">{metrics.evolis.lastEvent || 'Ninguno'}</span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Eventos por tipo</span>
+            <div className="event-types">
+              {Object.entries(metrics.evolis.eventsByType).map(([type, count]) => (
+                <span key={type} className="event-tag">
+                  {type}: {count}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* MoralNode */}
+        <div className="metrics-section">
+          <h3>⚖️ MoralNode — Ética</h3>
+          <div className="metric-item">
+            <span className="metric-label">Decisiones totales</span>
+            <span className="metric-value">{metrics.moral.totalDecisions}</span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Acciones permitidas</span>
+            <span className="metric-value allowed">{metrics.moral.allowedActions}</span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Acciones vetadas</span>
+            <span className="metric-value vetoed">{metrics.moral.vetoedActions}</span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Última decisión</span>
+            <span className={`metric-value ${metrics.moral.lastDecision === 'Permitida' ? 'allowed' : 'vetoed'}`}>
+              {metrics.moral.lastDecision || 'Ninguna'}
+            </span>
+          </div>
+        </div>
+
+        {/* Gemini */}
+        <div className="metrics-section">
+          <h3>🧠 Gemini — IA</h3>
+          <div className="metric-item">
+            <span className="metric-label">Modo</span>
+            <span className="metric-value">{metrics.gemini.useMock ? '📦 Mock (local)' : '☁️ Real'}</span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">API Key</span>
+            <span className={`metric-value ${metrics.gemini.hasApiKey ? 'valid' : 'invalid'}`}>
+              {metrics.gemini.hasApiKey ? '✅ Configurada' : '❌ No configurada'}
+            </span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Modelo</span>
+            <span className="metric-value">{metrics.gemini.model}</span>
+          </div>
+        </div>
+
+        {/* Sistema */}
+        <div className="metrics-section">
+          <h3>💻 Sistema</h3>
+          <div className="metric-item">
+            <span className="metric-label">Estado de red</span>
+            <span className={`metric-value ${metrics.system.networkStatus === 'online' ? 'online' : 'offline'}`}>
+              {metrics.system.networkStatus === 'online' ? '📶 Conectado' : '📴 Desconectado'}
+            </span>
+          </div>
+          <div className="metric-item">
+            <span className="metric-label">Tiempo activo</span>
+            <span className="metric-value">{formatUptime(metrics.system.uptime)}</span>
+          </div>
+        </div>
       </div>
     </div>
   );
-}
-
-const CAMERA_STATUS_STYLE: Record<string, { border: string; glow: string; label: string }> = {
-  active: { border: '#22C55E', glow: 'rgba(34,197,94,0.4)', label: 'ACTIVA' },
-  fail: { border: '#EF4444', glow: 'rgba(239,68,68,0.4)', label: 'FALLO' },
-  connecting: { border: '#FBBF24', glow: 'rgba(251,191,36,0.4)', label: 'CONECTANDO' },
-  standby: { border: '#9CA3AF', glow: 'rgba(156,163,175,0.2)', label: 'STANDBY' },
-  unavailable: { border: '#6B7280', glow: 'rgba(107,114,128,0.1)', label: 'N/A' },
 };
 
-function CameraRow({ cam }: { cam: CameraState }) {
-  const st = CAMERA_STATUS_STYLE[cam.status] || CAMERA_STATUS_STYLE.standby;
-  return (
-    <div className="flex items-center justify-between py-1.5 px-3 rounded-lg"
-      style={{ background: 'rgba(255,255,255,0.02)', border: `1px solid ${st.border}33` }}>
-      <span className="text-sm font-medium" style={{ color: '#9CA3AF' }}>{cam.label}</span>
-      <span className="text-sm font-mono px-2 py-0.5 rounded-full"
-        style={{ color: st.border, border: `1px solid ${st.border}55`, background: `${st.border}11` }}>
-        {st.label}
-      </span>
-    </div>
-  );
+// ============================================================
+// 9. FUNCIONES AUXILIARES
+// ============================================================
+
+function formatUptime(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return `${hours}h ${minutes}m ${secs}s`;
 }
 
-function MetricCard({ label, value, color, pulse }: { label: string; value: string; color: string; pulse?: boolean }) {
-  return (
-    <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${color}33` }}>
-      <div className="text-sm uppercase tracking-wider mb-1" style={{ color: '#9CA3AF' }}>{label}</div>
-      <div className={`text-lg font-bold font-mono ${pulse ? 'animate-pulse' : ''}`} style={{ color }}>
-        {value}
-      </div>
-    </div>
-  );
-}
+// ============================================================
+// 10. EXPORTACIÓN POR DEFECTO
+// ============================================================
 
-export default function AegisMetricsPanel({ open, onClose }: Props) {
-  const { state } = useApp();
-  if (!open) return null;
-
-  const statusColor = state.status === 'ARMADO' ? '#22C55E' : state.status === 'DESARMADO' ? '#EF4444' : '#FBBF24';
-  const activeModules = state.modules.filter(m => m.active).length;
-  const lastEvent = state.events[0];
-  const isPowerSaving = state.settings.powerSavingMode;
-  const isNormal = state.mode === 'normal';
-  const camQuality = isPowerSaving ? 'OFF' : isNormal ? '480p' : '1080p';
-  const audioQuality = isPowerSaving ? 'OFF' : isNormal ? '16kHz' : '44.1kHz';
-  const updateFreq = isPowerSaving ? '30s' : isNormal ? '15s' : '8s';
-
-  return (
-    <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center" style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }} onClick={onClose} role="presentation">
-      <div role="dialog" aria-modal="true" aria-label="Métricas del Sistema"
-        className="animate-slide-up w-full sm:max-w-md max-h-[85vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl"
-        style={{ background: 'linear-gradient(180deg, #1A2A3A 0%, #0A0C12 100%)', border: '1px solid rgba(251,191,36,0.2)', boxShadow: '0 -10px 40px rgba(0,0,0,0.5)' }}
-        onClick={e => e.stopPropagation()}>
-
-        <div className="sticky top-0 flex items-center justify-between px-5 py-4" style={{ background: 'rgba(10,12,26,0.95)', borderBottom: '1px solid rgba(255,255,255,0.08)', backdropFilter: 'blur(8px)' }}>
-          <div className="flex items-center gap-2">
-            <Shield size={20} style={{ color: '#FBBF24' }} aria-hidden="true" />
-            <h2 className="font-display font-semibold text-white">Metricas del Sistema</h2>
-          </div>
-          <button onClick={onClose} aria-label="Cerrar métricas" className="press-feedback p-1.5 rounded-lg transition-all active:scale-90" style={{ background: 'rgba(255,255,255,0.05)' }}>
-            <X size={18} style={{ color: '#9CA3AF' }} aria-hidden="true" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-4">
-          {isPowerSaving && (
-            <div className="rounded-xl p-3 flex items-center gap-2 animate-fade-in" style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)' }} role="status">
-              <BatteryLow size={16} style={{ color: '#22C55E' }} aria-hidden="true" />
-              <span className="text-sm font-semibold" style={{ color: '#4ADE80' }}>Modo Ahorro de Energia activo</span>
-            </div>
-          )}
-          <div className="rounded-xl p-4 flex items-center justify-between" style={{ background: `${statusColor}11`, border: `1px solid ${statusColor}44` }}>
-            <div>
-              <div className="text-sm uppercase tracking-wider mb-1" style={{ color: '#9CA3AF' }}>Estado del Sistema</div>
-              <div className="text-2xl font-bold font-mono animate-pulse" style={{ color: statusColor, textShadow: `0 0 12px ${statusColor}66` }} role="status" aria-label={`Estado: ${state.status}`}>
-                {state.status}
-              </div>
-            </div>
-            <Shield size={32} style={{ color: statusColor, filter: `drop-shadow(0 0 8px ${statusColor}88)` }} aria-hidden="true" />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <MetricCard label="Confianza Global" value={`${state.confidence}%`} color={state.confidence > 80 ? '#22C55E' : state.confidence > 60 ? '#FBBF24' : '#EF4444'} pulse={state.confidence < 70} />
-            <MetricCard label="Carga Cognitiva" value={`${state.cognitiveLoad}%`} color={state.cognitiveLoad > 70 ? '#EF4444' : state.cognitiveLoad > 50 ? '#FBBF24' : '#22C55E'} />
-            <MetricCard label="Eventos en Cola" value={String(state.events.length)} color="#FBBF24" />
-            <MetricCard label="Modulos Activos" value={`${activeModules}/${state.modules.length}`} color="#22C55E" />
-          </div>
-
-          <div>
-            <h3 className="text-sm uppercase tracking-wider mb-2" style={{ color: '#9CA3AF' }}>Modulos del Sistema</h3>
-            <div className="space-y-1.5">
-              {state.modules.map(m => <ModuleRow key={m.key} mod={m} />)}
-            </div>
-          </div>
-
-          <div>
-            <h3 className="text-sm uppercase tracking-wider mb-2" style={{ color: '#9CA3AF' }}>Camaras y Sensores</h3>
-            <div className="space-y-1">
-              {state.cameras.map(c => <CameraRow key={c.id} cam={c} />)}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            <div className="rounded-xl p-2.5 flex flex-col items-center gap-1" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <Camera size={16} style={{ color: isPowerSaving ? '#9CA3AF' : '#FBBF24' }} aria-hidden="true" />
-              <div className="text-sm" style={{ color: '#9CA3AF' }}>Camara</div>
-              <div className="text-sm font-mono" style={{ color: isPowerSaving ? '#9CA3AF' : '#E5E7EB' }}>{camQuality}</div>
-            </div>
-            <div className="rounded-xl p-2.5 flex flex-col items-center gap-1" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <Mic size={16} style={{ color: isPowerSaving ? '#9CA3AF' : '#FBBF24' }} aria-hidden="true" />
-              <div className="text-sm" style={{ color: '#9CA3AF' }}>Audio</div>
-              <div className="text-sm font-mono" style={{ color: isPowerSaving ? '#9CA3AF' : '#E5E7EB' }}>{audioQuality}</div>
-            </div>
-            <div className="rounded-xl p-2.5 flex flex-col items-center gap-1" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <Activity size={16} style={{ color: '#FBBF24' }} aria-hidden="true" />
-              <div className="text-sm" style={{ color: '#9CA3AF' }}>Update</div>
-              <div className="text-sm font-mono" style={{ color: '#E5E7EB' }}>{updateFreq}</div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-xl p-3 flex items-center gap-2" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)' }}>
-              <Send size={16} style={{ color: '#FBBF24' }} aria-hidden="true" />
-              <div>
-                <div className="text-sm uppercase tracking-wider" style={{ color: '#9CA3AF' }}>Enviados a Telegram</div>
-                <div className="text-base font-bold font-mono" style={{ color: '#FBBF24' }}>{state.telegramSentCount}</div>
-              </div>
-            </div>
-            <div className="rounded-xl p-3 flex items-center gap-2" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)' }}>
-              <Zap size={16} style={{ color: '#FBBF24' }} aria-hidden="true" />
-              <div>
-                <div className="text-sm uppercase tracking-wider" style={{ color: '#9CA3AF' }}>Ultimo Evento</div>
-                <div className="text-sm font-mono" style={{ color: '#FBBF24' }}>{lastEvent ? lastEvent.type : '---'}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+export default AegisMetricsPanel;
