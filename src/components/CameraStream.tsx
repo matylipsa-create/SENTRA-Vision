@@ -1,146 +1,248 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { Camera, CameraOff, RefreshCw, Maximize2 } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+// src/components/CameraStream.tsx
+// Componente de transmisión de cámara para Sentra Visión
+// Soporte para cámara trasera/delantera, procesamiento de frames y detección
 
-export default function CameraStream({ setVideo }: { setVideo?: (el: HTMLVideoElement | null) => void }) {
-  const { state, setSensors } = useApp();
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const [facing, setFacing] = useState<'environment' | 'user'>('environment');
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import './CameraStream.css';
+
+// ============================================================
+// 1. TIPOS E INTERFACES
+// ============================================================
+
+interface CameraStreamProps {
+  onFrame?: (imageData: ImageData) => void;
+  onStreamReady?: (stream: MediaStream) => void;
+  onError?: (error: Error) => void;
+  facingMode?: 'user' | 'environment';
+  resolution?: { width: number; height: number };
+  autoStart?: boolean;
+  className?: string;
+  showControls?: boolean;
+}
+
+// ============================================================
+// 2. COMPONENTE PRINCIPAL
+// ============================================================
+
+export const CameraStream: React.FC<CameraStreamProps> = ({
+  onFrame,
+  onStreamReady,
+  onError,
+  facingMode = 'environment',
+  resolution = { width: 640, height: 480 },
+  autoStart = false,
+  className = '',
+  showControls = true
+}) => {
+  // ============================================================
+  // 3. ESTADO
+  // ============================================================
+
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [switching, setSwitching] = useState(false);
-  const [connecting, setConnecting] = useState(false);
+  const [isMounted, setIsMounted] = useState(true);
 
-  const realMode = state.settings.realMode;
-  const powerSaving = state.settings.powerSavingMode;
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const animationRef = useRef<number | null>(null);
 
-  const stopStream = useCallback(() => {
+  // ============================================================
+  // 4. FUNCIONES DE CÁMARA
+  // ============================================================
+
+  /**
+   * Inicia la transmisión de la cámara
+   */
+  const startCamera = useCallback(async () => {
+    if (isStreaming) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const constraints: MediaStreamConstraints = {
+        video: {
+          facingMode,
+          width: { ideal: resolution.width },
+          height: { ideal: resolution.height },
+          frameRate: { ideal: 30 }
+        }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        setIsStreaming(true);
+        setError(null);
+
+        if (onStreamReady) {
+          onStreamReady(stream);
+        }
+
+        // Iniciar procesamiento de frames
+        if (onFrame) {
+          processFrames();
+        }
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Error al acceder a la cámara';
+      setError(errorMsg);
+      if (onError && err instanceof Error) {
+        onError(err);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isStreaming, facingMode, resolution, onStreamReady, onFrame, onError]);
+
+  /**
+   * Detiene la transmisión de la cámara
+   */
+  const stopCamera = useCallback(() => {
+    setIsMounted(false);
+
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
+
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+
+    setIsStreaming(false);
   }, []);
 
-  const startStream = useCallback(async () => {
-    setSwitching(true);
-    setConnecting(true);
-    stopStream();
-    if (!realMode || powerSaving) {
-      setSensors({ cameraActive: false, cameraError: null });
-      setSwitching(false);
-      setConnecting(false);
+  /**
+   * Procesa los frames para detección
+   */
+  const processFrames = useCallback(() => {
+    if (!isMounted) return;
+    if (!videoRef.current || !canvasRef.current || !onFrame) {
+      animationRef.current = requestAnimationFrame(processFrames);
       return;
     }
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        const msg = 'getUserMedia no soportado en este navegador';
-        setError(msg);
-        setSensors({ cameraError: msg, cameraActive: false });
-        setSwitching(false);
-        setConnecting(false);
-        return;
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
-      }
-      setError(null);
-      setSensors({ cameraActive: true, cameraError: null });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Error al acceder a la camara';
-      setError(msg);
-      setSensors({ cameraError: msg, cameraActive: false });
-    } finally {
-      setSwitching(false);
-      setConnecting(false);
-    }
-  }, [realMode, powerSaving, facing, stopStream, setSensors]);
 
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+
+    if (!context) {
+      animationRef.current = requestAnimationFrame(processFrames);
+      return;
+    }
+
+    // Dibujar el frame en el canvas
+    canvas.width = video.videoWidth || resolution.width;
+    canvas.height = video.videoHeight || resolution.height;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Obtener datos de la imagen
+    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    onFrame(imageData);
+
+    // Continuar el ciclo
+    animationRef.current = requestAnimationFrame(processFrames);
+  }, [isMounted, onFrame, resolution]);
+
+  // ============================================================
+  // 5. EFECTOS
+  // ============================================================
+
+  // Iniciar automáticamente si está configurado
   useEffect(() => {
-    startStream();
-    return stopStream;
-  }, [startStream, stopStream]);
-
-  const handleSwitch = () => {
-    setFacing(f => f === 'environment' ? 'user' : 'environment');
-  };
-
-  const handleFullscreen = () => {
-    if (videoRef.current?.requestFullscreen) {
-      videoRef.current.requestFullscreen().catch(() => {});
+    if (autoStart) {
+      startCamera();
     }
-  };
 
-  if (!realMode || powerSaving) {
-    return (
-      <div className="rounded-xl p-4 flex flex-col items-center gap-2" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-        <CameraOff size={24} style={{ color: '#9CA3AF' }} aria-hidden="true" />
-        <span className="text-sm text-center" style={{ color: '#9CA3AF' }}>
-          {powerSaving ? 'Camara desactivada en modo ahorro' : 'Activa modo Real para ver la camara'}
-        </span>
-      </div>
-    );
-  }
+    return () => {
+      stopCamera();
+    };
+  }, [autoStart, startCamera, stopCamera]);
+
+  // Limpiar recursos al desmontar
+  useEffect(() => {
+    return () => {
+      stopCamera();
+      isMounted = false;
+    };
+  }, [stopCamera]);
+
+  // ============================================================
+  // 6. RENDER
+  // ============================================================
 
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: '#000', border: '1px solid rgba(251,191,36,0.3)' }}>
-      <div className="relative aspect-video bg-black">
-        <video
-          ref={(el) => {
-            videoRef.current = el;
-            setVideo?.(el);
-          }}
-          autoPlay
-          playsInline
-          muted
-          className="w-full h-full object-cover"
-          style={{ transform: facing === 'user' ? 'scaleX(-1)' : 'none' }}
-          aria-label="Transmisión de cámara en vivo"
-        />
-        {(switching || connecting) && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2" style={{ background: 'rgba(0,0,0,0.6)' }} role="status" aria-label="Conectando cámara">
-            <div className="connecting-dots" aria-hidden="true"><span /><span /><span /></div>
-            <span className="text-sm" style={{ color: '#FBBF24' }}>Conectando...</span>
-          </div>
-        )}
-        {error && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2" style={{ background: 'rgba(0,0,0,0.8)' }} role="alert">
-            <CameraOff size={24} style={{ color: '#EF4444' }} aria-hidden="true" />
-            <span className="text-sm text-center px-4" style={{ color: '#EF4444' }}>{error}</span>
-          </div>
-        )}
-        <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-1 rounded-lg" style={{ background: 'rgba(0,0,0,0.6)' }} role="img" aria-label="Grabando">
-          <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: '#EF4444' }} aria-hidden="true" />
-          <span className="text-sm font-mono text-white">REC</span>
+    <div className={`camera-stream ${className}`}>
+      {/* Video */}
+      <video
+        ref={videoRef}
+        className="camera-video"
+        playsInline
+        muted
+        aria-label="Transmisión de cámara"
+      />
+
+      {/* Canvas oculto para procesamiento */}
+      <canvas
+        ref={canvasRef}
+        className="camera-canvas"
+        style={{ display: 'none' }}
+      />
+
+      {/* Estado de carga */}
+      {isLoading && (
+        <div className="camera-overlay loading">
+          <span className="loading-spinner" />
+          <p>Iniciando cámara...</p>
         </div>
-        <div className="absolute top-2 right-2 flex items-center gap-1">
-          <button onClick={handleFullscreen} aria-label="Pantalla completa" className="press-feedback p-1.5 rounded-lg active:scale-90" style={{ background: 'rgba(0,0,0,0.6)' }}>
-            <Maximize2 size={14} style={{ color: '#FBBF24' }} aria-hidden="true" />
+      )}
+
+      {/* Error */}
+      {error && (
+        <div className="camera-overlay error">
+          <span className="error-icon">⚠️</span>
+          <p className="error-text">{error}</p>
+          <button onClick={startCamera}>Reintentar</button>
+        </div>
+      )}
+
+      {/* Controles */}
+      {showControls && isStreaming && (
+        <div className="camera-controls">
+          <button
+            className="control-button stop"
+            onClick={stopCamera}
+            aria-label="Detener cámara"
+          >
+            ⏹️ Detener
           </button>
-          <button onClick={handleSwitch} aria-label="Cambiar cámara" className="press-feedback p-1.5 rounded-lg active:scale-90" style={{ background: 'rgba(0,0,0,0.6)' }}>
-            <RefreshCw size={14} style={{ color: '#FBBF24' }} aria-hidden="true" />
-          </button>
         </div>
-      </div>
-      <div className="flex items-center justify-between px-3 py-2" style={{ background: 'rgba(10,12,18,0.95)' }}>
-        <div className="flex items-center gap-1.5">
-          <Camera size={14} style={{ color: state.sensors.cameraActive ? '#22C55E' : '#EF4444' }} aria-hidden="true" />
-          <span className="text-sm font-medium" style={{ color: '#9CA3AF' }}>
-            {facing === 'environment' ? 'Camara Trasera' : 'Camara Frontal'}
-          </span>
-        </div>
-        <span className="text-sm font-mono" style={{ color: state.sensors.cameraActive ? '#22C55E' : '#EF4444' }} role="status" aria-label={state.sensors.cameraActive ? 'En vivo' : 'Sin señal'}>
-          {state.sensors.cameraActive ? 'EN VIVO' : 'SIN SENAL'}
+      )}
+
+      {/* Indicador de estado */}
+      <div className="camera-status">
+        <span className={`status-indicator ${isStreaming ? 'active' : 'inactive'}`} />
+        <span className="status-text">
+          {isStreaming ? '📷 En vivo' : '📷 Cámara inactiva'}
         </span>
       </div>
     </div>
   );
-}
+};
+
+// ============================================================
+// 7. EXPORTACIÓN POR DEFECTO
+// ============================================================
+
+export default CameraStream;
