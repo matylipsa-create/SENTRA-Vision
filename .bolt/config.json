@@ -1,3 +1,125 @@
 {
-  "template": "bolt-vite-react-ts"
+  "$schema": "https://bolt.dev/config.schema.json",
+  "name": "Sentra Vision",
+  "version": "3.1.2-PROT",
+  "description": "Sentra Core — Motor de IA Soberana para percepción, ética y trazabilidad",
+  
+  "project": {
+    "type": "web",
+    "framework": "react",
+    "buildTool": "vite",
+    "language": "typescript",
+    "packageManager": "yarn"
+  },
+
+  "deployment": {
+    "platform": "vercel",
+    "buildCommand": "yarn build",
+    "outputDirectory": "dist",
+    "installCommand": "yarn install --frozen-lockfile",
+    "environment": {
+      "NODE_VERSION": "18.x",
+      "YARN_VERSION": "1.22.19"
+    }
+  },
+
+  "pwa": {
+    "enabled": true,
+    "manifestPath": "public/manifest.json",
+    "serviceWorkerPath": "public/sw.js",
+    "offline": true,
+    "installable": true,
+    "scope": "/",
+    "startUrl": "/"
+  },
+
+  "features": {
+    "ethics": {
+      "moralNode": true,
+      "humanVeto": true,
+      "violenceFilter": true,
+      "privacyFilter": true
+    },
+    "tracing": {
+      "evolis": true,
+      "hashChain": true,
+      "dilithium": true,
+      "persistence": "indexedDB"
+    },
+    "perception": {
+      "cocoSsd": true,
+      "tensorflow": true,
+      "lazyLoad": true,
+      "offline": true
+    },
+    "accessibility": {
+      "talkBack": true,
+      "nvda": true,
+      "voice": true,
+      "haptic": true,
+      "doubleTap": true,
+      "aria": true,
+      "keyboardNavigation": true
+    },
+    "communication": {
+      "mqtt": true,
+      "syncthing": true,
+      "lora": false,
+      "bluetoothMesh": false
+    }
+  },
+
+  "modules": {
+    "core": [
+      "MoralNode",
+      "EVOLIS",
+      "TCREIBridge"
+    ],
+    "services": [
+      "GeminiService",
+      "VoiceManager"
+    ],
+    "hooks": [
+      "useRealModeSensors"
+    ],
+    "lib": [
+      "crypto",
+      "pipedream"
+    ]
+  },
+
+  "paths": {
+    "src": "src",
+    "core": "src/core",
+    "services": "src/services",
+    "hooks": "src/hooks",
+    "lib": "src/lib",
+    "public": "public",
+    "dist": "dist"
+  },
+
+  "linting": {
+    "enabled": true,
+    "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
+    "ignorePatterns": ["dist", "node_modules", "*.test.ts", "*.test.tsx"]
+  },
+
+  "testing": {
+    "enabled": false,
+    "framework": "vitest"
+  },
+
+  "documentation": {
+    "readme": "README.md",
+    "changelog": "CHANGELOG.md"
+  },
+
+  "branding": {
+    "name": "Sentra Visión",
+    "shortName": "SentraV",
+    "themeColor": "#00d4ff",
+    "backgroundColor": "#0a0a0f",
+    "icon": "public/icon-192.png",
+    "slogan": "Cuando todo lo demás se apaga, Sentra Core sigue ahí."
+  }
 }
